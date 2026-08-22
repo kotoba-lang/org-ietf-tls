@@ -13,7 +13,7 @@
             [tls.codec :as c]
             [tls.extension :as ext]
             [tls.handshake :as hs]
-            [tls.jdk-provider :as jdk]
+            [tls.harness :as harness]
             [tls.record :as rec]
             [tls.result :as r]
             [tls.schedule :as sch]
@@ -21,7 +21,7 @@
             [tls.transcript :as tr]
             [tls.vectors :as v]))
 
-(def provider jdk/provider)
+(def provider @harness/provider)
 (def h (r/val (sch/hashes provider :sha256)))
 (def aes128 (r/val (suite/suite provider :TLS_AES_128_GCM_SHA256)))
 

@@ -20,7 +20,11 @@
             [tls.vectors :as v]))
 
 (def ^:private namespaces
-  '[tls.rfc8448-test tls.refusal-test])
+  "All four, so `-M:report` is not a narrower run wearing a fuller run's
+   summary. `tls.cert-test` and `tls.provider-test` belong to other agents;
+   they are listed rather than discovered so that a namespace that stops being
+   loaded is a visible edit here, not a quietly smaller number."
+  '[tls.rfc8448-test tls.refusal-test tls.cert-test tls.provider-test])
 
 (defn -main [& _]
   (let [fixture (try @v/fixture (catch Throwable e {:error (.getMessage e)}))]

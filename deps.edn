@@ -13,7 +13,7 @@
  ;; answers `identical` for each.
  :deps {io.github.kotoba-lang/org-ietf-x509
         {:git/url "https://github.com/kotoba-lang/org-ietf-x509.git"
-         :git/sha "4bb5784801c42e360201e0ac04ecddb4b3000e8b"}
+         :git/sha "80a0686a81838ad65b4a9c6533ae12b3fc433313"}
         ;; Direct rather than only transitive: `tls.cert` reads
         ;; `subjectAltName`'s inner DER itself (see `leaf-dns-names`) and names
         ;; algorithm OIDs through `asn1.oid`. A transitive dependency that a
@@ -30,6 +30,15 @@
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
          :main-opts ["-m" "cognitect.test-runner"]
          :exec-fn cognitect.test-runner.api/test}
+  ;; The counting harness. Separate from :test because :test binds :main-opts
+  ;; to the test-runner; with `-M:test:report` the later alias's :main-opts
+  ;; wins and :test still supplies the classpath and the runner dependency.
+  ;; It exits 3 -- not 0 and not 1 -- when it could not run its vectors at all:
+  ;; a suite that could not measure has not found a bug, and reporting one is
+  ;; its own kind of lie.
+  :report {:extra-paths ["test"]
+           :main-opts ["-m" "tls.report"]}
+
   ;; clj-kondo as a Clojars lib (no Homebrew/system install needed).
   :lint {:replace-deps {clj-kondo/clj-kondo {:mvn/version "2024.11.14"}}
          :main-opts ["-m" "clj-kondo.main" "--lint" "src" "test"

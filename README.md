@@ -73,15 +73,34 @@ exactly. The fixture records the SHA-256 of the input it came from
 
 ## What you must not assume
 
-- **This is not a general-purpose TLS client.** It has one job: open a
-  connection to a host whose key you already know.
-- **There is no chain validation.** No root store, no path building, no name
-  constraints, no CRL, no OCSP, no expiry check, **no hostname verification
-  against the certificate**. `handshake` refuses to proceed unless you pass
-  `:pin-spki-sha256`, a `:verify-chain` function, or the explicit
-  `:insecure-skip-peer-auth` — there is no default, because a client that
-  authenticates nothing and returns success is worse than one that fails.
-  `tls.cert` is where real chain handling belongs.
+`authenticate-peer` returns what it checked **and what it did not**, in the
+value, so a caller that logs the decision logs the limit with it. From a live
+run against `kotobase.net`:
+
+```clojure
+:checked     #{:leaf-usable :basic-constraints :server-name :spki-pin}
+:not-checked #{:chain-to-trust-anchor :issuer-signature :revocation
+               :name-constraints :certificate-transparency :validity}
+```
+
+- **There is no chain validation.** No root store, no path building, no
+  issuer-signature check, no name constraints, no CRL, no OCSP, no certificate
+  transparency. An `[:ok …]` does not mean the certificate chains to anything.
+  Identity comes from the SPKI pin and nothing else.
+- **`handshake` refuses to proceed** unless you pass `:pin-spki-sha256`, a
+  `:verify-chain` function, or the explicit `:insecure-skip-peer-auth`. There is
+  no default, because a client that authenticates nothing and returns success
+  is worse than one that fails.
+- **Expiry is checked only if you pass `:now`.** This library reads no clock —
+  "was it valid when it signed" and "is it valid now" are different questions
+  and only the caller knows which it is asking. Without `:now`, `:validity`
+  appears in `:not-checked`; an expired certificate accepted knowingly and one
+  accepted silently must not produce the same map.
+- **Hostname matching happens only if you pass `:server-name`**, which the
+  ClientHello needs anyway, so in practice it does. It is RFC 6125 §6.4 over
+  `subjectAltName` `dNSName` entries: a wildcard is the entire leftmost label
+  of a name with at least three labels and consumes exactly one. `commonName`
+  is never a fallback. Pass `:check-server-name? false` to skip it.
 - **No HelloRetryRequest.** One X25519 key share. If the server wants another
   group the handshake refuses and names it. Servers that require P-256 are
   unreachable.
@@ -91,17 +110,12 @@ exactly. The fixture records the SHA-256 of the input it came from
 - **Only `TLS_AES_128_GCM_SHA256` and `TLS_CHACHA20_POLY1305_SHA256`.**
   `TLS_AES_256_GCM_SHA384` is not offered: it needs SHA-384, and offering a
   suite the provider may not carry is negotiating into a handshake that cannot
-  finish. Which of the two is actually offered is *computed from the provider*
+  finish. Which of the two is offered is *computed from the provider*
   (`tls.suite/negotiable`), not declared.
-- **`tls.client/spki-of` is a hand-rolled DER walk and is a stopgap.** It finds
-  the SubjectPublicKeyInfo structurally. It is marked as such in the source and
-  belongs in `tls.cert` on top of `kotoba-lang/org-ietf-x509`.
 - **Timing.** The protocol layer is not written to be constant-time beyond the
-  two comparisons that must be (`verify_data`, AEAD tags — and the latter is
-  the provider's). Byte vectors of boxed integers are not a constant-time
-  representation, and nothing here claims otherwise.
-- **`test/tls/jdk_provider.clj` is a test-scope stand-in**, not the shipped
-  provider. `src/tls/provider/jvm.clj` is the real one.
+  two comparisons that must be (`verify_data`, and AEAD tags, which are the
+  provider's). Byte vectors of boxed integers are not a constant-time
+  representation and nothing here claims otherwise.
 
 ## Layout
 
@@ -116,12 +130,38 @@ exactly. The fixture records the SHA-256 of the input it came from
 | `tls.extension` | §4.2, RFC 6066 | extension framing; unknown extensions round-trip byte-exactly; duplicates refused |
 | `tls.handshake` | §4 | message framing and bodies; HelloRetryRequest detection; the §4.1.3 client checks |
 | `tls.suite` | App. B.4 | suite geometry bound to the provider's AEAD |
+| `tls.cert` | §4.4 | the `Certificate` message, the `CertificateVerify` signed content, and the peer-identity decision |
+| `tls.provider` | — | the crypto seam, as data: the contract, the validator, and the reason set |
+| `tls.provider.jvm` | — | the JDK-backed provider. Byte arrays |
+| `tls.provider.vectors` | — | adapts a byte-array provider to the byte-vector protocol layer, and refuses one that fails a published known answer |
 | `tls.client` | — | the driver: handshake, `write!`, `read!`, `close!` |
 | `tls.transport.jvm` | — | a TCP socket. Two functions, `:send` and `:recv` |
 
-Bytes everywhere are `vector<int 0..255>`, the representation
+## Two byte representations, on purpose
+
+The protocol layer works in `vector<int 0..255>` — the representation
 `kotoba-lang/bytes`, `kotoba-lang/noise` and `kotoba-lang/org-ietf-asn1`
-already use — so the protocol layer needs no reader conditional.
+already share. That is not taste: byte vectors have **value equality**, so
+`(= expected actual)` on a 679-octet record is a real assertion and a failure
+prints the divergence. Byte arrays compare by identity, and a suite written
+against them would be asserting `Arrays/equals` everywhere or asserting
+nothing.
+
+`tls.provider` speaks byte arrays, because that is what `MessageDigest`, `Mac`,
+`Cipher` and `Signature` take.
+
+`tls.provider.vectors/adapt` is the single conversion between them, using
+`asn1.core`'s `->ints` / `ints->bytes` rather than a third pair. It **refuses**
+a provider that fails `tls.provider/validate` or any of three published known
+answers — SHA-256 of the empty string (FIPS 180-4), RFC 4231 test case 1, and
+RFC 7748 §5.2's X25519 vector.
+
+That check is not ceremony. The provider answers `[:error :hash/bad-input]`
+when handed something that is not a byte array, and **`[:error :hash/bad-input]`
+is itself a vector**: passed on as a digest it gives the key schedule a
+two-element "hash", derives secrets nobody agrees with, and fails on the far
+side with no local diagnostic. Checking once, against answers nobody in this
+repository chose, turns that into a refusal at wiring time.
 
 ## The provider seam
 
@@ -158,26 +198,26 @@ TLS 1.2. What did exist and is used or is directly adjacent:
 
 ```sh
 clojure -M:test                   # plain clojure.test
-
-# the counting harness (the :test alias already binds :main-opts, so the
-# report alias supplies its own; a :report alias in deps.edn would be tidier)
-clojure -Sdeps '{:aliases {:report {:extra-paths ["test"] :main-opts ["-m" "tls.report"]}}}' \
-  -M:test:report
+clojure -M:report                 # the same tests, with counts
 ```
 
 Last run:
 
 ```
-Ran 23 tests containing 196 assertions.
+Ran 79 tests containing 550 assertions.
 0 failures, 0 errors.
 
 RFC8448-SOURCE-SHA256      6564d1376d1ec744fc7a9993da15ebc1b9be361908b166091f47ef605c537fba
 RFC8448-BLOCKS-IN-FIXTURE  108
 RFC8448-VECTORS-COMPARED   43
 REFUSALS-EXERCISED         40
-ASSERTIONS                 196 passed, 0 failed, 0 errored
+ASSERTIONS                 550 passed, 0 failed, 0 errored
 OK
 ```
+
+Verified in three directions, through the alias: unmodified → **exit 0**; one
+vector byte corrupted → **exit 1** (`549 passed, 1 failed`); fixture removed →
+**exit 3** and `COULD-NOT-RUN  refusing to report a pass`.
 
 `tls.report` (see below for the invocation) exits **3**, not 1, when it could not run its vectors at all — a
 suite that could not measure has not found a bug, and reporting one is its own

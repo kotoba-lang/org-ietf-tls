@@ -44,10 +44,12 @@
   - the server's `Finished` verifies against the handshake traffic secret
   - the peer's SPKI matches the pin, when one is given"
   (:require [tls.alert :as alert]
+            [tls.cert :as cert]
             [tls.codec :as c]
             [tls.extension :as ext]
             [tls.handshake :as hs]
             [tls.record :as rec]
+            [tls.provider.vectors :as pv]
             [tls.result :as r :refer [ok error]]
             [tls.schedule :as sch]
             [tls.suite :as suite]
@@ -185,75 +187,146 @@
                                     (ext/->ext :key_share ks)]})]
         (ok {:tls/message msg :tls/session-id session-id})))))
 
-(defn- authenticate-peer
-  "Peer authentication, stated as one function so that what it does and does
-   not do is inspectable in one place.
+(def cert-alerts
+  "`tls.cert` refusal reason -> the alert a peer would receive.
 
-   With `:pin-spki-sha256`, the leaf's SubjectPublicKeyInfo must hash to the
-   pin. That is a *stronger* statement than chain validation for a known host
-   and a much weaker one for an unknown host, and the difference is the
-   caller's to make -- so there is no default, and no silent success:
-   `authenticate-peer` refuses unless one of the two options was passed."
-  [provider config leaf-der spki-der]
-  (let [{:keys [pin-spki-sha256 insecure-skip-peer-auth verify-chain]} config]
+  `tls.cert` answers `[:error {:reason …}]` and does not carry an alert, because
+  deciding whether to trust a certificate is not by itself a wire event -- the
+  same refusal is used by callers that are not on a connection. This table is
+  where it becomes one, and it is a table rather than a default so that adding
+  a refusal to `tls.cert` without deciding what a peer should see is a visible
+  omission rather than a silent `:handshake_failure`.
+
+  `lift` returns `:internal_error` with `:tls/unmapped-cert-reason` for anything
+  absent here, which is a wrong-looking alert on purpose: it is easier to
+  notice than a plausible one."
+  {;; framing and parsing -- the peer sent something malformed
+   :message-too-short :decode_error
+   :length-past-end :decode_error
+   :trailing-bytes :decode_error
+   :not-a-certificate-message :unexpected_message
+   :not-a-certificate-verify :unexpected_message
+   :handshake-length-mismatch :decode_error
+   :empty-certificate-list :decode_error
+   :empty-certificate :decode_error
+   :empty-signature :decode_error
+   :empty-certificate-chain :decode_error
+   :certificate-unparseable :bad_certificate
+   ;; the certificate itself
+   :leaf-unusable :bad_certificate
+   :leaf-is-ca :bad_certificate
+   :certificate-expired :certificate_expired
+   :certificate-not-yet-valid :certificate_expired
+   :public-key-algorithm-unsupported :unsupported_certificate
+   ;; identity
+   :peer-not-pinned :bad_certificate
+   :no-subject-alt-name :bad_certificate
+   :server-name-mismatch :bad_certificate
+   :server-name-is-ip-address :bad_certificate
+   ;; the signature
+   :signature-invalid :decrypt_error
+   :signature-scheme-unknown :illegal_parameter
+   :signature-scheme-unsupported :handshake_failure
+   :signature-scheme-retired :handshake_failure
+   :signature-scheme-key-mismatch :illegal_parameter
+   :rsa-pkcs1-forbidden-in-certificate-verify :illegal_parameter
+   ;; our own wiring, not the peer's fault -- and never a pass
+   :no-spki-pins-configured :internal_error
+   :validity-unmeasured :internal_error
+   :unknown-side :internal_error
+   ;; We measured the transcript and passed an empty one -- our bug, and the
+   ;; refusal exists precisely so "the transcript was not measured" cannot
+   ;; produce the same bytes as "the transcript was measured and is this".
+   :empty-transcript-hash :internal_error
+   :provider-missing-digest :internal_error
+   :provider-missing-signature-verify :internal_error
+   :provider-answer-unrecognised :internal_error
+   :provider-refused :internal_error
+   :provider-threw :internal_error})
+
+(defn- lift
+  "Carry a `tls.cert` result into this namespace's shape, attaching the alert.
+
+   `tls.cert` uses the same `[:ok v]` / `[:error m]` vector shape, so the happy
+   path is the identity. Only the error payload changes, and it keeps
+   `tls.cert`'s own map under `:tls/cert` rather than being flattened -- the
+   detail it attaches (`:observed`, `:presented`, `:pins`) is what an operator
+   acts on."
+  [result]
+  (if (= :ok (first result))
+    result
+    (let [m (second result)
+          reason (:reason m)]
+      (error (get cert-alerts reason :internal_error)
+             reason
+             (cond-> {:tls/cert (dissoc m :reason)}
+               (not (contains? cert-alerts reason))
+               (assoc :tls/unmapped-cert-reason reason))))))
+
+(defn- authenticate-peer
+  "Decide whether to talk to this peer. Delegates to `tls.cert`.
+
+   The one thing kept here is `:insecure-skip-peer-auth`, and it is kept
+   BESIDE `tls.cert` rather than inside it: `tls.cert/authenticate-peer`
+   refuses an empty pin set outright (`:no-spki-pins-configured`), which is the
+   right answer for a library whose job is to decide. A client needs a way to
+   say `I am testing against a server I just generated a certificate for`, and
+   that way must be loud -- so it is a separate branch, it never reaches
+   `tls.cert`, and it returns `:tls/authenticated-by :none` with a warning and
+   the same `:tls/not-checked` idea in the value.
+
+   Note what an `[:ok …]` here does NOT mean. `tls.cert` answers with its own
+   `:tls/not-checked` set and it is passed through untouched: chain to a trust
+   anchor, revocation, name constraints, certificate transparency and the
+   leaf's issuer signature are none of them checked. Hostname matching happens
+   only if the caller passed a `:server-name`, which the ClientHello needs
+   anyway."
+  [array-provider config leaf entries server-name]
+  (let [{:keys [pin-spki-sha256 insecure-skip-peer-auth verify-chain check-server-name?
+                now]} config]
     (cond
-      (fn? verify-chain) (verify-chain leaf-der spki-der)
-      (some? pin-spki-sha256)
-      (let [got (c/hex ((get-in provider [:hash :sha256]) (vec spki-der)))]
-        (if (= (clojure.string/lower-case pin-spki-sha256) got)
-          (ok {:tls/authenticated-by :spki-pin :tls/spki-sha256 got})
-          (error :bad_certificate :spki-pin-mismatch
-                 {:tls/expected pin-spki-sha256 :tls/actual got})))
+      (fn? verify-chain) (verify-chain leaf entries)
+
       insecure-skip-peer-auth
       (ok {:tls/authenticated-by :none
-           :tls/warning "peer identity was not checked"})
+           :tls/warning "peer identity was not checked at all"
+           :tls/not-checked #{:spki-pin :server-name :chain-to-trust-anchor
+                              :revocation :validity :issuer-signature}})
+
+      (some? pin-spki-sha256)
+      ;; `:now` is the caller's, never a clock read here -- this library takes
+      ;; no clock, for the same reason `org-ietf-x509` does not: "was it valid
+      ;; when it signed" is a different question from "is it valid now", and
+      ;; only the caller knows which one it is asking.
+      ;;
+      ;; A caller that passes no `:now` gets NO validity check, and that fact is
+      ;; added to `:tls/not-checked` in the returned value rather than being
+      ;; left to the docstring. An expired certificate accepted silently and an
+      ;; expired certificate accepted knowingly must not produce the same map.
+      (let [res (lift (cert/authenticate-peer
+                       array-provider
+                       {:tls/chain entries
+                        :tls/expect (cond-> {:tls/spki-pins #{(clojure.string/lower-case pin-spki-sha256)}}
+                                      (not (false? check-server-name?))
+                                      (assoc :tls/server-name server-name)
+                                      (nil? now) (assoc :tls/check-validity? false))
+                        :tls/now now}))]
+        (if (or (r/error? res) (some? now))
+          res
+          (ok (update (r/val res) :tls/not-checked (fnil conj #{}) :validity))))
+
       :else
-      ;; The important refusal in this file. A TLS client with no configured
-      ;; way to authenticate its peer has not got a weaker connection -- it has
-      ;; an unauthenticated one, and returning success here is how that becomes
+      ;; The important refusal. A TLS client with no configured way to
+      ;; authenticate its peer has not got a weaker connection -- it has an
+      ;; unauthenticated one, and returning success here is how that becomes
       ;; invisible.
       (error :certificate_required :no-peer-authentication-configured
              {:tls/note "pass :pin-spki-sha256, :verify-chain, or :insecure-skip-peer-auth"}))))
 
-(defn- spki-of
-  "The SubjectPublicKeyInfo of a DER certificate, as bytes.
-
-   Extracted structurally rather than parsed: a Certificate is
-   `SEQUENCE { tbsCertificate SEQUENCE {...}, ... }` and the SPKI is the first
-   child of tbsCertificate whose tag is SEQUENCE and which parses as
-   `{AlgorithmIdentifier, BIT STRING}`. Doing it by hand here is a stopgap --
-   `tls.cert` owns this properly, on top of `org-ietf-x509`. It is marked so
-   because a hand-rolled DER walk is exactly the kind of code that should not
-   quietly become permanent."
-  [der]
-  (letfn [(tlv [b i]
-            (when (< (inc i) (count b))
-              (let [tag (nth b i)
-                    l0 (nth b (inc i))]
-                (if (< l0 0x80)
-                  {:tag tag :hstart i :vstart (+ i 2) :len l0 :end (+ i 2 l0)}
-                  (let [nb (- l0 0x80)
-                        len (reduce (fn [a k] (+ (* a 256) (nth b (+ i 2 k)))) 0 (range nb))]
-                    {:tag tag :hstart i :vstart (+ i 2 nb) :len len :end (+ i 2 nb len)})))))
-          (children [b start end]
-            (loop [i start acc []]
-              (if (>= i end) acc
-                  (let [t (tlv b i)] (if (nil? t) acc (recur (:end t) (conj acc t)))))))]
-    (let [b (vec der)
-          cert (tlv b 0)
-          tbs (first (children b (:vstart cert) (:end cert)))
-          kids (children b (:vstart tbs) (:end tbs))
-          ;; SPKI is the SEQUENCE whose two children are a SEQUENCE and a BIT STRING
-          spki (first (filter (fn [t]
-                                (and (= 0x30 (:tag t))
-                                     (let [cs (children b (:vstart t) (:end t))]
-                                       (and (= 2 (count cs))
-                                            (= 0x30 (:tag (first cs)))
-                                            (= 0x03 (:tag (second cs)))))))
-                              kids))]
-      (if spki
-        (ok (subvec b (:hstart spki) (:end spki)))
-        (error :bad_certificate :spki-not-found {})))))
+(defn- array-provider
+  "The byte-array-shaped provider underneath an adapted one. `tls.cert` and the
+   provider seam speak arrays; the protocol layer speaks vectors."
+  [vp] (or (:tls/byte-array-provider vp) vp))
 
 (defn handshake
   "Run the 1-RTT handshake. Returns a connection value or an error.
@@ -261,8 +334,9 @@
      (handshake provider transport
                 {:server-name \"kotobase.net\"
                  :pin-spki-sha256 \"5060...\"})"
-  [provider transport config]
-  (let [suites (or (:suites config) (suite/negotiable provider))]
+  [raw-provider transport config]
+  (r/let-ok [provider (pv/adapt raw-provider)]
+   (let [suites (or (:suites config) (suite/negotiable provider))]
     (if (empty? suites)
       (error :insufficient_security :provider-supports-no-suite {})
       (r/let-ok [share (ok ((get-in provider [:x25519 :keypair])))
@@ -317,25 +391,33 @@
                                         (error :unexpected_message :expected-certificate
                                                {:tls/type (:tls/type cert-m)
                                                 :tls/note "this client does not do PSK, so a server that skips Certificate is out of contract"})
-                                        (r/let-ok [cert (hs/parse-certificate (:tls/body cert-m))
-                                                   leaf (ok (first (:tls/certificates cert)))
-                                                   spki (spki-of leaf)
-                                                   auth (authenticate-peer provider config leaf spki)
+                                        ;; `tls.cert` owns the certificate from
+                                        ;; here: it parses with the workspace's
+                                        ;; x509 (not a second DER walk), decides
+                                        ;; the identity, and matches -- never
+                                        ;; tests for truth -- the provider's
+                                        ;; answer about the signature. It takes
+                                        ;; the ARRAY-shaped provider.
+                                        (r/let-ok [cert (lift (cert/parse-certificate-message
+                                                              (:tls/body cert-m)))
+                                                   leaf (ok (:tls/leaf cert))
+                                                   auth (authenticate-peer raw-provider config leaf
+                                                                           (:tls/entries cert)
+                                                                           (:server-name config))
                                                    cv-raw (next-handshake! hstream)
                                                    cv-m (hs/split cv-raw)]
                                           (let [t-cert (-> t0 (tr/add ee) (tr/add cert-raw))]
                                             (if (not= :certificate_verify (:tls/type cv-m))
                                               (error :unexpected_message :expected-certificate-verify
                                                      {:tls/type (:tls/type cv-m)})
-                                              (r/let-ok [cv (hs/parse-certificate-verify (:tls/body cv-m))]
-                                                (let [content (hs/certificate-verify-content
-                                                               :server (tr/digest t-cert (:hash h)))
-                                                      vres ((get-in provider [:signature :verify])
-                                                            (:tls/scheme cv) spki content (:tls/signature cv))]
-                                                  (if-not (and (vector? vres) (= :ok (first vres)) (true? (second vres)))
-                                                    (error :decrypt_error :certificate-verify-failed
-                                                           {:tls/scheme (:tls/scheme cv)
-                                                            :tls/provider-said (if (vector? vres) (second vres) vres)})
+                                              (r/let-ok [cv (lift (cert/verify-certificate-verify
+                                                                   (array-provider provider)
+                                                                   {:certificate leaf
+                                                                    :transcript-hash (tr/digest t-cert (:hash h))
+                                                                    :message (:tls/body cv-m)
+                                                                    :side :server}))]
+                                                (let []
+                                                  (if false nil
                                                     (r/let-ok [fin-raw (next-handshake! hstream)
                                                                fin-m (hs/split fin-raw)]
                                                       (let [t-cv (tr/add t-cert cv-raw)]
@@ -366,15 +448,15 @@
                                                                    :tls/hash h
                                                                    :tls/reader st
                                                                    :tls/transport transport
-                                                                   :tls/peer-certificates (:tls/certificates cert)
-                                                                   :tls/peer-spki spki
+                                                                   :tls/peer-certificates (mapv :tls/cert-der (:tls/entries cert))
+                                                                   :tls/peer-spki (cert/spki-der leaf)
                                                                    :tls/authentication auth
-                                                                   :tls/certificate-verify-scheme (:tls/scheme cv)
+                                                                   :tls/certificate-verify-scheme (:tls/signature-scheme cv)
                                                                    :tls/write {:keys c-ap-keys :seq (atom 0)}
                                                                    :tls/read {:keys s-ap-keys :seq (atom 0)}
                                                                    :tls/exporter-master
                                                                    (r/val (sch/derive-secret h master "exp master" sfin-hash))
-                                                                   :tls/resumption-master nil}))))))))))))))))))))))))))))))))
+                                                                   :tls/resumption-master nil})))))))))))))))))))))))))))))))))
 
 ;; --------------------------------------------------------- application data
 

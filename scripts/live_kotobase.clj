@@ -1,14 +1,14 @@
 ;; A live handshake against kotobase.net:443 over the public internet.
 ;;
-;;   clojure -Sdeps '{:paths ["src" "test" "resources"]}' -M scripts/live_kotobase.clj [path]
-;;   clojure -Sdeps '{:paths ["src" "test" "resources"]}' -M scripts/live_kotobase.clj /llms.txt wrong-pin
+;;   clojure -M scripts/live_kotobase.clj [path]
+;;   clojure -M scripts/live_kotobase.clj /llms.txt wrong-pin
 ;;
 ;; The peer is authenticated by SPKI pin. The pin below is the one
 ;; `kotoba-lang/aiueos` already uses for this host; it is a public key digest,
 ;; not a secret. Pass a second argument to run the NEGATIVE case: the same
 ;; server with a deliberately wrong pin, which must refuse.
 (require '[tls.client :as client] '[tls.codec :as c] '[tls.result :as r]
-         '[tls.jdk-provider :as jdk] '[tls.transport.jvm :as tp])
+         '[tls.provider.jvm :as jvm] '[tls.transport.jvm :as tp])
 
 (def host "kotobase.net")
 (def pin "50602ad366823fcf5274a7c917baa4fd24b9de4fd15635ff501177c83d05473e")
@@ -16,9 +16,10 @@
 (let [[path wrong?] *command-line-args*
       path (or path "/llms.txt")
       use-pin (if wrong? (apply str (repeat 64 "a")) pin)
+      provider (jvm/provider)
       t (tp/socket-transport host 443 {:timeout-ms 15000})]
   (try
-    (let [res (client/handshake jdk/provider t {:server-name host :pin-spki-sha256 use-pin})]
+    (let [res (client/handshake provider t {:server-name host :pin-spki-sha256 use-pin})]
       (cond
         (and wrong? (r/error? res))
         (println "refused, as it must:" (pr-str (r/err res)))

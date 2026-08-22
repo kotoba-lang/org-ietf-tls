@@ -457,10 +457,26 @@
   (is (not (cert/server-name-matches? "" "kotobase.net"))))
 
 (deftest reads-dns-names-from-the-subject-alt-name
+  ;; The reader is `x509.core/dns-names`. `tls.cert` had a private copy of it
+  ;; until org-ietf-x509 80a0686 landed; the copy is deleted, and this asserts
+  ;; the library answers what the copy did.
   (is (= ["kotobase.net" "ipni.kotobase.net" "*.ipni.kotobase.net"]
-         (cert/leaf-dns-names (cert-fixture "kotobase-net-leaf.der"))))
-  (is (nil? (cert/leaf-dns-names (cert-fixture "no-san-leaf.der")))
-      "absent is nil, not empty — they are different facts"))
+         (x509/dns-names (cert-fixture "kotobase-net-leaf.der"))))
+
+  ;; Three states, and all three are fed here. A reader that collapsed nil into
+  ;; [] would pass a suite that only ever fed it one of them, which is why the
+  ;; othername-only fixture exists at all.
+  (testing "no subjectAltName extension at all"
+    (is (nil? (x509/dns-names (cert-fixture "no-san-leaf.der")))
+        "absent is nil, not empty — they are different facts"))
+  (testing "a subjectAltName that names no host"
+    (let [names (x509/dns-names (cert-fixture "othername-only-leaf.der"))]
+      (is (= [] names) "present-but-no-dNSName is [], not nil")
+      (is (some? names) "and it must not be nil, or the two facts have merged")))
+  (testing "lowercased per RFC 4343, order kept"
+    (is (= ["kotobase.net" "ipni.kotobase.net" "*.ipni.kotobase.net"]
+           (x509/dns-names (cert-fixture "kotobase-net-leaf.der")))
+        "issuer order, not sorted")))
 
 ;; ── the decision ─────────────────────────────────────────────────────────────
 
@@ -471,6 +487,28 @@
                           {:tls/chain [(cert-fixture leaf-file)]
                            :tls/expect expect
                            :tls/now now}))
+
+(defn- pin-of [leaf-file]
+  (second (cert/spki-sha256-hex provider (cert-fixture leaf-file))))
+
+(deftest the-two-absences-refuse-differently
+  ;; The distinction is only worth having if it survives into the decision.
+  (testing "no subjectAltName -> :no-subject-alt-name"
+    (let [r (decide "no-san-leaf.der"
+                    {:tls/spki-pins #{(pin-of "no-san-leaf.der")}
+                     :tls/server-name "no-san.test.invalid"
+                     :tls/check-validity? false})]
+      (is (= :no-subject-alt-name (refused r)))))
+  (testing "subjectAltName with no dNSName -> :server-name-mismatch, presented []"
+    (let [r (decide "othername-only-leaf.der"
+                    {:tls/spki-pins #{(pin-of "othername-only-leaf.der")}
+                     :tls/server-name "othername-only.test.invalid"
+                     :tls/check-validity? false})]
+      (is (= :server-name-mismatch (refused r))
+          "a certificate that HAS a SAN naming no host is a mismatch, not an absence")
+      (is (= [] (:presented (second r)))
+          "and the refusal says the list was empty rather than saying nothing"))))
+
 
 (deftest authenticates-a-pinned-peer
   (let [r (decide "kotobase-net-leaf.der"
