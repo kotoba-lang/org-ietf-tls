@@ -11,18 +11,19 @@
   Each test also names what it broke, so that `the break and the report agree`
   is checkable by a reader rather than assumed."
   (:require [clojure.test :refer [deftest testing is]]
+            [tls.cert :as cert]
             [tls.client :as client]
             [tls.codec :as c]
             [tls.extension :as ext]
             [tls.handshake :as hs]
-            [tls.jdk-provider :as jdk]
+            [tls.harness :as harness]
             [tls.record :as rec]
             [tls.result :as r]
             [tls.schedule :as sch]
             [tls.suite :as suite]
             [tls.vectors :as v]))
 
-(def provider jdk/provider)
+(def provider @harness/provider)
 (def h (r/val (sch/hashes provider :sha256)))
 (def aes128 (r/val (suite/suite provider :TLS_AES_128_GCM_SHA256)))
 
@@ -292,32 +293,59 @@
 ;; ------------------------------------------------- peer authentication
 
 (deftest peer-authentication-refusals
+  ;; `tls.client/authenticate-peer` no longer decides anything itself: it
+  ;; delegates to `tls.cert` and lifts that namespace's refusal into an alert.
+  ;; So these assert the LIFTING as much as the decision -- a refusal that
+  ;; arrives without an alert is not wire behaviour, and `lift` mapping a
+  ;; reason to `:internal_error` by default would be a plausible-looking pass.
   (let [auth #'client/authenticate-peer
-        spki (r/val ((var-get #'client/spki-of)
-                     (first (:tls/certificates
-                             (r/val (hs/parse-certificate
-                                     (:tls/body (r/val (hs/split
-                                                        (v/one {:actor :server :label "Certificate"}))))))))))]
+        entries (:tls/entries (r/val (cert/parse-certificate-message
+                                      (:tls/body (r/val (hs/split
+                                                         (v/one {:actor :server :label "Certificate"})))))))
+        leaf (:tls/certificate (first entries))
+        real-pin (second (cert/spki-sha256-hex @harness/array-provider leaf))]
     (testing "no configured way to authenticate is a refusal, not a default"
-      ;; This is the most important refusal in the library. A client with no
-      ;; pin, no chain verifier and no explicit opt-out has an UNAUTHENTICATED
-      ;; connection, and returning success here is how that becomes invisible.
+      ;; The most important refusal in the library. A client with no pin, no
+      ;; chain verifier and no explicit opt-out has an UNAUTHENTICATED
+      ;; connection, and returning success is how that becomes invisible.
       (refused "no peer authentication configured"
-               (auth provider {} [] spki)
+               (auth @harness/array-provider {} leaf entries nil)
                :no-peer-authentication-configured :certificate_required))
-    (testing "a wrong pin is refused, and the error names both digests"
+    (testing "a wrong pin is refused, and the error names what was there"
       (let [e (refused "pin mismatch"
-                       (auth provider {:pin-spki-sha256 (apply str (repeat 64 "0"))} [] spki)
-                       :spki-pin-mismatch :bad_certificate)]
-        (is (= 64 (count (:tls/actual e))))))
+                       (auth @harness/array-provider
+                             {:pin-spki-sha256 (apply str (repeat 64 "0"))} leaf entries nil)
+                       :peer-not-pinned :bad_certificate)]
+        (is (= real-pin (:observed (:tls/cert e)))
+            "tls.cert's detail must survive the lift, not be flattened away")))
     (testing "the right pin is accepted"
-      (let [got (c/hex ((get-in provider [:hash :sha256]) spki))]
-        (is (r/ok? (auth provider {:pin-spki-sha256 got} [] spki)))
-        (is (= :spki-pin (:tls/authenticated-by (r/val (auth provider {:pin-spki-sha256 got} [] spki)))))))
+      (let [res (auth @harness/array-provider {:pin-spki-sha256 real-pin} leaf entries nil)]
+        (is (r/ok? res) (str "refused: " (pr-str (r/err res))))
+        (is (= :spki-pin (:tls/authenticated-by (r/val res))))
+        (is (contains? (:tls/not-checked (r/val res)) :chain-to-trust-anchor)
+            "an [:ok ...] must carry what it does NOT mean")))
+    (testing "an upper-case pin is the same pin"
+      (is (r/ok? (auth @harness/array-provider
+                       {:pin-spki-sha256 (clojure.string/upper-case real-pin)}
+                       leaf entries nil))))
     (testing "the explicit opt-out says so in its result"
-      (let [ok (r/val (auth provider {:insecure-skip-peer-auth true} [] spki))]
+      (let [ok (r/val (auth @harness/array-provider {:insecure-skip-peer-auth true} leaf entries nil))]
         (is (= :none (:tls/authenticated-by ok)))
-        (is (string? (:tls/warning ok)))))))
+        (is (string? (:tls/warning ok)))
+        (is (contains? (:tls/not-checked ok) :spki-pin))))))
+
+(deftest every-cert-refusal-has-an-alert
+  ;; `lift` maps `tls.cert` reasons to alerts from a table with no default. A
+  ;; reason added to `tls.cert` and not to the table would otherwise become a
+  ;; silent `:internal_error`, which reads like our bug rather than the peer's.
+  (testing "the alert table covers tls.cert's documented refusals"
+    (let [missing (remove #(contains? client/cert-alerts %) (keys cert/refusals))]
+      (is (empty? missing)
+          (str "tls.cert refusals with no alert mapping: " (pr-str (vec missing))))))
+  (testing "an unmapped reason is loud, not plausible"
+    (let [lifted (#'client/lift [:error {:reason :a-reason-nobody-mapped}])]
+      (is (= :internal_error (r/alert lifted)))
+      (is (= :a-reason-nobody-mapped (:tls/unmapped-cert-reason (r/err lifted)))))))
 
 (deftest the-suite-actually-refused-things
   ;; The count is printed by `tls.report`, not here: a mid-suite print reports

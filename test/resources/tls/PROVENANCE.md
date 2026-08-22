@@ -131,3 +131,27 @@ generating a new key and a new leaf, per the commands above.
 Nothing in the suite reads a clock. Every validity assertion passes `:tls/now`
 explicitly, which is why an expiring fixture makes a test *stale* rather than
 *red* — and why this table is here, because stale is the harder one to notice.
+
+## `othername-only-leaf`
+
+`othername-only-leaf` (`.pem` and `.der`), by `openssl req -x509` on
+2026-08-22, OpenSSL 3.6.3:
+
+```
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -sha256 \
+  -days 3650 -nodes -keyout othername.key -out othername-only-leaf.pem \
+  -subj "/CN=othername-only.test.invalid" \
+  -addext "subjectAltName=email:nobody@othername-only.test.invalid,URI:https://othername-only.test.invalid/" \
+  -addext "basicConstraints=critical,CA:FALSE"
+```
+
+It exists for one reason: it is the only fixture whose `subjectAltName` is
+**present and contains no `dNSName`**, so `x509.core/dns-names` answers `[]`
+rather than nil. Before it, the suite fed the reader only nil (`no-san-leaf`)
+and non-empty (`kotobase-net-leaf`) — so a reader that collapsed `nil` into
+`[]`, or `[]` into nil, would have passed. Those are different facts about a
+certificate and they get different refusals (`:no-subject-alt-name` versus
+`:server-name-mismatch` with an empty `:presented`); `cert_test` asserts both.
+
+The private key is not kept. Nothing signs with this certificate — it is
+parsed, and its SubjectPublicKeyInfo is pinned in one test.

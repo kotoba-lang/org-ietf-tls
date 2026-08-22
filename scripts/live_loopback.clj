@@ -5,20 +5,21 @@
 ;;   openssl s_server -accept 44443 -cert ed.crt -key ed.key -tls1_3 -www &
 ;;   PIN=$(openssl x509 -in ed.crt -pubkey -noout | openssl pkey -pubin -outform DER \
 ;;          | openssl dgst -sha256 -r | cut -d' ' -f1)
-;;   clojure -Sdeps '{:paths ["src" "test" "resources"]}' -M scripts/live_loopback.clj $PIN
+;;   clojure -M scripts/live_loopback.clj $PIN
 ;;
 ;; Not part of the default suite: it needs a listening server, and a test that
 ;; silently passes when its server is absent is the exact failure mode this
 ;; repository's report harness exists to prevent.
 (require '[tls.client :as client] '[tls.codec :as c] '[tls.result :as r]
-         '[tls.jdk-provider :as jdk] '[tls.transport.jvm :as tp])
+         '[tls.provider.jvm :as jvm] '[tls.transport.jvm :as tp])
 
 (let [pin (or (first *command-line-args*)
               (throw (ex-info "usage: live_loopback.clj <spki-sha256-hex>" {})))
       port (Integer/parseInt (or (second *command-line-args*) "44443"))
+      provider (jvm/provider)
       t (tp/socket-transport "127.0.0.1" port {:timeout-ms 8000})]
   (try
-    (let [res (client/handshake jdk/provider t {:server-name "localhost" :pin-spki-sha256 pin})]
+    (let [res (client/handshake provider t {:server-name "localhost" :pin-spki-sha256 pin})]
       (if (r/error? res)
         (do (println "HANDSHAKE FAILED:" (pr-str (r/err res))) (System/exit 1))
         (let [conn (r/val res)]

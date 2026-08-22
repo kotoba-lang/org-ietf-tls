@@ -629,28 +629,6 @@
 
 ;; ── names ────────────────────────────────────────────────────────────────────
 
-(defn leaf-dns-names
-  "`subjectAltName` dNSName entries, lowercased.
-
-  **This function belongs in `kotoba-lang/org-ietf-x509`, not here.** That
-  library exposes `other-names` (the `[0] otherName` entries JPKI needs) but
-  nothing for `[2] dNSName`, which is the one a TLS client lives on. The
-  addition is written and pushed as `agent/san-dns-names` on that repository,
-  with its own test; it is not merged, and a `deps.edn` pin must be reachable
-  from a default branch, so this cannot call it yet.
-
-  **When that branch lands: delete this and call `x509/dns-names`.** It is a
-  temporary second reader for one extension, and two readers for one field is
-  exactly the shape where only one of them gets fixed.
-
-  What stays here either way is the MATCHING (`server-name-matches?`) —
-  wildcard rules are RFC 6125, which is a TLS question, not an X.509 one."
-  [certificate]
-  (when-let [ext (x509/extension certificate :subject-alt-name)]
-    (->> (:asn1/elements (asn1/decode (:der ext)))
-         (filter #(asn1/context-tag? % 2))
-         (mapv #(str/lower-case (str/join (map char (asn1/->ints (:asn1/content %)))))))))
-
 (defn- strip-root-dot [s]
   (if (and (> (count s) 1) (str/ends-with? s ".")) (subs s 0 (dec (count s))) s))
 
@@ -777,16 +755,24 @@
                       {:server-name server-name
                        :detail "matching an IP needs SAN iPAddress; only dNSName is implemented"})
 
-              (and server-name (nil? (leaf-dns-names leaf)))
+              ;; `x509/dns-names` answers nil for "no subjectAltName extension at
+              ;; all" and [] for "a subjectAltName that names no host" (an
+              ;; otherName-only certificate). They are different facts about the
+              ;; certificate and they keep different refusals: `nil` is
+              ;; :no-subject-alt-name, `[]` falls through to
+              ;; :server-name-mismatch with an empty `:presented`. A reader that
+              ;; collapsed them would still pass a test that only ever fed it
+              ;; one of the two, which is why both are asserted in cert-test.
+              (and server-name (nil? (x509/dns-names leaf)))
               (refuse :no-subject-alt-name
                       {:server-name server-name
                        :subject (:text (:x509/subject leaf))})
 
               (and server-name
-                   (not (some #(server-name-matches? % server-name) (leaf-dns-names leaf))))
+                   (not (some #(server-name-matches? % server-name) (x509/dns-names leaf))))
               (refuse :server-name-mismatch
                       {:server-name server-name
-                       :presented (leaf-dns-names leaf)})
+                       :presented (vec (x509/dns-names leaf))})
 
               :else
               [:ok {:tls/authenticated-by :spki-pin
