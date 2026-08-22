@@ -17,9 +17,9 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [tls.cert :as cert]
-            [x509.core :as x509])
-  (:import (java.security KeyFactory MessageDigest PublicKey Signature)
-           (java.security.spec MGF1ParameterSpec PSSParameterSpec X509EncodedKeySpec)))
+            [tls.provider :as tls-provider]
+            [tls.provider.jvm :as jvm]
+            [x509.core :as x509]))
 
 ;; ── fixtures on disk ─────────────────────────────────────────────────────────
 
@@ -38,42 +38,25 @@
   (with-open [in (io/input-stream (fixture-file n))] (asn1/->ints (.readAllBytes in))))
 (defn- cert-fixture [n] (x509/parse (der-fixture n)))
 
-;; ── the provider seam, on the JVM ────────────────────────────────────────────
+;; ── the provider seam ───────────────────────────────────────────────────────
 ;;
-;; `src/tls/provider/*` belongs to another agent; this is the smallest thing
-;; that satisfies the two keys `tls.cert` reads, so that what is under test is
-;; the content construction and the dispatch rather than a provider.
+;; The real one. `tls.provider/contract` puts the digest at `[:hash :sha256]`
+;; and defines verification as `(fn [scheme spki msg sig]) -> [:ok true] |
+;; [:error reason]`, with no `[:ok false]` -- so a caller that tests the answer
+;; for truth reads `[:error :signature/bad-signature]`, a non-empty vector, as
+;; an acceptance. Testing against a stand-in shaped the way this file's author
+;; guessed would have agreed with the guess.
 
-(def ^:private key-algorithm
-  {:ecdsa-secp256r1-sha256 "EC"
-   :rsa-pss-rsae-sha256 "RSA" :rsa-pss-rsae-sha384 "RSA"
-   :ed25519 "Ed25519"})
+(defn- sha256 ^bytes [^bytes bs] ((get-in (jvm/provider) [:hash :sha256]) bs))
 
-(defn- public-key ^PublicKey [scheme spki-der]
-  (.generatePublic (KeyFactory/getInstance (key-algorithm scheme))
-                   (X509EncodedKeySpec. (asn1/ints->bytes spki-der))))
+(def ^:private provider (jvm/provider))
 
-(defn- signature-object ^Signature [scheme]
-  (case scheme
-    :ecdsa-secp256r1-sha256 (Signature/getInstance "SHA256withECDSA")
-    :ed25519 (Signature/getInstance "Ed25519")
-    :rsa-pss-rsae-sha256 (doto (Signature/getInstance "RSASSA-PSS")
-                           (.setParameter (PSSParameterSpec.
-                                           "SHA-256" "MGF1" MGF1ParameterSpec/SHA256 32 1)))
-    :rsa-pss-rsae-sha384 (doto (Signature/getInstance "RSASSA-PSS")
-                           (.setParameter (PSSParameterSpec.
-                                           "SHA-384" "MGF1" MGF1ParameterSpec/SHA384 48 1)))))
-
-(defn- sha256 ^bytes [^bytes bs] (.digest (MessageDigest/getInstance "SHA-256") bs))
-
-(def ^:private provider
-  {:digest {:sha256 sha256}
-   :signature
-   {:verify (fn [{:keys [scheme public-key-spki-der signed signature]}]
-              (let [s (signature-object scheme)]
-                (.initVerify s (public-key scheme public-key-spki-der))
-                (.update s ^bytes (asn1/ints->bytes signed))
-                (.verify s ^bytes (asn1/ints->bytes signature))))}})
+(deftest the-accepted-schemes-are-the-seams-accepted-schemes
+  ;; A drift gate. If either side adds a scheme the other does not have,
+  ;; `select-signature-scheme` either refuses something the provider could
+  ;; verify or hands it something it cannot -- and neither shows up until a
+  ;; handshake with that peer.
+  (is (= tls-provider/signature-schemes cert/accepted-schemes)))
 
 ;; ── evidence floor ───────────────────────────────────────────────────────────
 
@@ -416,13 +399,44 @@
     (is (= :provider-missing-signature-verify
            (refused (cert/verify-certificate-verify {} {:certificate leaf :transcript-hash h :message msg}))))
     (is (= :provider-missing-digest (refused (cert/spki-sha256-hex {} leaf))))
+
     (testing "a provider that throws is not a peer that failed to authenticate"
-      (let [angry {:digest {:sha256 (fn [_] (throw (ex-info "no such algorithm" {})))}
-                   :signature {:verify (fn [_] (throw (ex-info "key rejected" {})))}}]
+      (let [angry {:hash {:sha256 (fn [_] (throw (ex-info "no such algorithm" {})))}
+                   :signature {:verify (fn [& _] (throw (ex-info "key rejected" {})))}}]
         (is (= :provider-threw (refused (cert/spki-sha256-hex angry leaf))))
         (is (= :provider-threw
                (refused (cert/verify-certificate-verify
-                         angry {:certificate leaf :transcript-hash h :message msg}))))))))
+                         angry {:certificate leaf :transcript-hash h :message msg}))))))
+
+    (testing "a provider that declines for its own reason is not a bad signature"
+      (let [declining {:hash {:sha256 (fn [_] [:error :hash/bad-input])}
+                       :signature {:verify (fn [& _] [:error :signature/bad-public-key])}}
+            r (cert/verify-certificate-verify
+               declining {:certificate leaf :transcript-hash h :message msg})]
+        (is (= :provider-refused (refused r)))
+        (is (= :signature/bad-public-key (:provider-reason (second r)))
+            "and it carries the reason, because :signature-invalid would name the wrong party")
+        (let [d (cert/spki-sha256-hex declining leaf)]
+          (is (= :provider-refused (refused d)))
+          (is (= :hash/bad-input (:provider-reason (second d)))
+              "hexing that vector would have produced a plausible-looking pin"))))
+
+    (testing "an answer outside the contract is refused, including a truthy one"
+      ;; This is the defect this file's author shipped and then found: the first
+      ;; version of `verify-certificate-verify` treated any truthy return as a
+      ;; pass, which makes `[:error :signature/bad-signature]` an acceptance.
+      ;; `true` is what the guessed contract returned, so it is what this asserts
+      ;; against.
+      (let [wrong-shape {:hash {:sha256 (fn [_] (byte-array 7))}
+                         :signature {:verify (fn [& _] true)}}
+            r (cert/verify-certificate-verify
+               wrong-shape {:certificate leaf :transcript-hash h :message msg})]
+        (is (= :provider-answer-unrecognised (refused r)))
+        (is (= "true" (:got (second r))))
+        (let [d (cert/spki-sha256-hex wrong-shape leaf)]
+          (is (= :provider-answer-unrecognised (refused d)))
+          (is (= 7 (:got-octets (second d)))
+              "a 7-octet digest would have hexed into a 14-character pin"))))))
 
 ;; ── hostname matching (RFC 6125 §6.4) ────────────────────────────────────────
 

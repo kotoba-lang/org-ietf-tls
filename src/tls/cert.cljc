@@ -84,8 +84,10 @@
 
    ;; the provider seam
    :provider-missing-signature-verify "no fn at [:signature :verify] in the injected provider"
-   :provider-missing-digest      "no fn at [:digest :sha256] in the injected provider"
+   :provider-missing-digest      "no fn at [:hash :sha256] in the injected provider"
    :provider-threw               "the injected provider threw; a thrown verifier is not a verified signature"
+   :provider-refused             "the provider declined for a reason of its own (see :provider-reason)"
+   :provider-answer-unrecognised "the provider returned something its contract does not allow"
    :signature-invalid            "the provider verified the content and said no"
 
    ;; the decision
@@ -305,23 +307,38 @@
   `50602ad366823fcf5274a7c917baa4fd24b9de4fd15635ff501177c83d05473e`, which is
   what the live gate has been pinning it at, and `cert_test` asserts it.
 
-  The digest comes from the injected provider at `[:digest :sha256]`. A missing
-  one is `:provider-missing-digest` rather than a nil that hashes to something."
+  The digest comes from the injected provider at `[:hash :sha256]`
+  (`tls.provider/contract`). A missing one is `:provider-missing-digest` rather
+  than a nil that hashes to something, and an answer that is not 32 octets is
+  `:provider-answer-unrecognised` rather than a shorter pin -- the seam is
+  allowed to return `[:error :hash/bad-input]`, and hexing that vector would
+  produce a plausible-looking string."
   [provider certificate]
-  (let [sha256 (get-in provider [:digest :sha256])
+  (let [sha256 (get-in provider [:hash :sha256])
         der (spki-der certificate)]
     (cond
-      (not (ifn? sha256)) (refuse :provider-missing-digest {:path [:digest :sha256]})
+      (not (ifn? sha256)) (refuse :provider-missing-digest {:path [:hash :sha256]})
       (empty? der) (refuse :certificate-unparseable
                            {:field "subjectPublicKeyInfo" :detail "no SPKI DER on the parsed certificate"})
       :else
       (let [d (try [:ok (sha256 (asn1/ints->bytes der))]
                    (catch #?(:clj Exception :cljs :default) e [:error e]))]
-        (if (error? d)
-          (refuse :provider-threw {:op [:digest :sha256]
+        (cond
+          (error? d)
+          (refuse :provider-threw {:op [:hash :sha256]
                                    :detail #?(:clj (.getMessage ^Exception (second d))
                                               :cljs (.-message (second d)))})
-          [:ok (asn1/hex (second d))])))))
+
+          (and (vector? (second d)) (= :error (first (second d))))
+          (refuse :provider-refused {:op [:hash :sha256]
+                                     :provider-reason (second (second d))})
+
+          (not= 32 (count (asn1/->ints (second d))))
+          (refuse :provider-answer-unrecognised
+                  {:op [:hash :sha256] :expected-octets 32
+                   :got-octets (count (asn1/->ints (second d)))})
+
+          :else [:ok (asn1/hex (second d))])))))
 
 ;; ── signature schemes (§4.2.3) ───────────────────────────────────────────────
 
@@ -537,21 +554,27 @@
   "Whether the peer's `CertificateVerify` was made by the key in the leaf, over
   the transcript we measured → `[:ok {:tls/signature-scheme …}]`.
 
-  `provider` supplies the verification at `[:signature :verify]`, called with
+  `provider` supplies the verification at `[:signature :verify]`, which
+  `tls.provider/contract` defines as
 
-  ```clojure
-  {:scheme :ecdsa-secp256r1-sha256   ; already agreed with the key
-   :public-key-spki-der [ints]       ; the leaf's SPKI, unmodified
-   :signed [ints]                    ; certificate-verify-content
-   :signature [ints]}
-  ```
+      (fn [scheme spki-der message signature]) -> [:ok true] | [:error reason]
 
-  and returning truthy or falsey. Nothing else in this namespace touches a key.
+  with byte arrays for the three byte arguments. Nothing else in this namespace
+  touches a key.
 
-  A provider that throws is `:provider-threw` and not `:signature-invalid`.
-  They are different facts — one says the peer is an impostor, the other says
-  we did not find out — and collapsing them is how a broken verifier reads as
-  an attack, or worse, how an absent one reads as a pass."
+  **The answer is matched, not tested for truth.** That seam has no `[:ok
+  false]` on purpose -- a rejected signature is `[:error
+  :signature/bad-signature]` -- so a caller that asks whether the return value
+  is truthy reads every rejection as an acceptance, because `[:error ...]` is a
+  non-empty vector. Anything that is neither `[:ok true]` nor `[:error ...]` is
+  `:provider-answer-unrecognised`, and never a pass.
+
+  Three outcomes that look alike are kept apart. `:signature-invalid` says the
+  peer is an impostor; `:provider-refused` says the provider declined for a
+  reason of its own (an SPKI it could not read, a scheme it does not know);
+  `:provider-threw` says we did not find out at all. Collapsing them is how a
+  broken verifier reads as an attack, or worse, how an absent one reads as a
+  pass."
   [provider {:keys [certificate transcript-hash message side]}]
   (let [verify (get-in provider [:signature :verify])
         parsed (if (map? message) [:ok message] (parse-certificate-verify message))]
@@ -569,11 +592,12 @@
           (let [content (certificate-verify-content (or side :server) transcript-hash)]
             (if (error? content)
               content
-              (let [r (try [:ok (verify {:scheme (second scheme)
-                                         :public-key-spki-der (spki-der certificate)
-                                         :signed (second content)
-                                         :signature signature})]
-                           (catch #?(:clj Exception :cljs :default) e [:error e]))]
+              (let [r (try [:ok (verify (second scheme)
+                                        (asn1/ints->bytes (spki-der certificate))
+                                        (asn1/ints->bytes (second content))
+                                        (asn1/ints->bytes signature))]
+                           (catch #?(:clj Exception :cljs :default) e [:error e]))
+                    answer (second r)]
                 (cond
                   (error? r)
                   (refuse :provider-threw
@@ -581,14 +605,27 @@
                            :detail #?(:clj (.getMessage ^Exception (second r))
                                       :cljs (.-message (second r)))})
 
-                  (second r) [:ok {:tls/signature-scheme (second scheme)
-                                   :tls/signed-octets (count (second content))}]
+                  (= [:ok true] answer)
+                  [:ok {:tls/signature-scheme (second scheme)
+                        :tls/signed-octets (count (second content))}]
 
-                  :else
+                  (and (vector? answer) (= :error (first answer))
+                       (= :signature/bad-signature (second answer)))
                   (refuse :signature-invalid
                           {:scheme (second scheme)
                            :signature-octets (count signature)
-                           :detail "the leaf's key did not sign this transcript"}))))))))))
+                           :detail "the leaf's key did not sign this transcript"})
+
+                  (and (vector? answer) (= :error (first answer)))
+                  (refuse :provider-refused
+                          {:op [:signature :verify] :scheme (second scheme)
+                           :provider-reason (second answer)})
+
+                  :else
+                  (refuse :provider-answer-unrecognised
+                          {:op [:signature :verify] :scheme (second scheme)
+                           :contract "[:ok true] | [:error reason]"
+                           :got (pr-str answer)}))))))))))
 
 ;; ── names ────────────────────────────────────────────────────────────────────
 
