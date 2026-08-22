@@ -4,7 +4,26 @@
  ;; same seam `kotoba-lang/noise` uses -- so the JVM provider that makes this
  ;; usable today can be replaced by aiueos's native `.kotoba` objects
  ;; (`x25519.kotoba`, `sha256.kotoba`) without touching the handshake.
- :deps {}
+ ;;
+ ;; The two dependencies are the certificate parser this workspace already has.
+ ;; `tls.cert` must not grow a second one: a TLS client that parses X.509
+ ;; differently from the CMS/timestamp path is two answers to "whose key is
+ ;; this", and only one of them gets fixed. Both pins are the `main` tip as of
+ ;; 2026-08-22 and `gh api repos/kotoba-lang/<repo>/compare/main...<sha>`
+ ;; answers `identical` for each.
+ :deps {io.github.kotoba-lang/org-ietf-x509
+        {:git/url "https://github.com/kotoba-lang/org-ietf-x509.git"
+         :git/sha "4bb5784801c42e360201e0ac04ecddb4b3000e8b"}
+        ;; Direct rather than only transitive: `tls.cert` reads
+        ;; `subjectAltName`'s inner DER itself (see `leaf-dns-names`) and names
+        ;; algorithm OIDs through `asn1.oid`. A transitive dependency that a
+        ;; namespace requires by name is a dependency that disappears when the
+        ;; intermediate drops it. x509 pins asn1 at 3704c75; this pin is four
+        ;; commits ahead of that and a descendant of it, so tools.deps takes
+        ;; this one.
+        io.github.kotoba-lang/org-ietf-asn1
+        {:git/url "https://github.com/kotoba-lang/org-ietf-asn1.git"
+         :git/sha "e106c53357cf6649f8d3185e68aba0c00470685f"}}
  :aliases
  {:test {:extra-paths ["test"]
          :extra-deps {io.github.cognitect-labs/test-runner
