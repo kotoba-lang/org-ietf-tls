@@ -48,7 +48,10 @@
             [tls.codec :as c]
             [tls.extension :as ext]
             [tls.handshake :as hs]
+            [tls.ech :as ech]
             [tls.record :as rec]
+            [hpke.core :as hpke]
+            [hpke.dhkem :as dhkem]
             [tls.provider.vectors :as pv]
             [tls.result :as r :refer [ok error]]
             [tls.schedule :as sch]
@@ -166,26 +169,126 @@
    :ed25519
    :rsa_pkcs1_sha256 :rsa_pkcs1_sha384])
 
-(defn- build-client-hello [provider {:keys [server-name suites signature-algorithms]} share]
-  (r/let-ok [sni (ext/server-name server-name)
+(defn- hello-extensions
+  "The extension list, for a given SNI. `extra` is appended.
+
+   Taking the name as an argument rather than reading it from the config is
+   what lets ECH build two hellos that differ in exactly one extension."
+  [{:keys [signature-algorithms]} sni-host share extra]
+  (r/let-ok [sni (ext/server-name sni-host)
              sv (ext/supported-versions-client)
              gr (ext/supported-groups [:x25519])
              sa (ext/signature-algorithms (or signature-algorithms default-signature-algorithms))
              ks (ext/key-share-client [[:x25519 (:public share)]])
              modes (ext/psk-key-exchange-modes [:psk_dhe_ke])]
-    (let [random ((:random provider) 32)
-          session-id ((:random provider) 32)]
-      (r/let-ok [msg (hs/client-hello
-                      {:random random
-                       :session-id session-id
-                       :cipher-suites (mapv #(get suite/ids %) suites)
-                       :extensions [(ext/->ext :server_name sni)
-                                    (ext/->ext :supported_groups gr)
-                                    (ext/->ext :signature_algorithms sa)
-                                    (ext/->ext :supported_versions sv)
-                                    (ext/->ext :psk_key_exchange_modes modes)
-                                    (ext/->ext :key_share ks)]})]
-        (ok {:tls/message msg :tls/session-id session-id})))))
+    (ok (into [(ext/->ext :server_name sni)
+               (ext/->ext :supported_groups gr)
+               (ext/->ext :signature_algorithms sa)
+               (ext/->ext :supported_versions sv)
+               (ext/->ext :psk_key_exchange_modes modes)
+               (ext/->ext :key_share ks)]
+              extra))))
+
+(defn- build-client-hello [provider {:keys [server-name suites] :as config} share]
+  (let [random ((:random provider) 32)
+        session-id ((:random provider) 32)]
+    (r/let-ok [exts (hello-extensions config server-name share [])
+               msg (hs/client-hello
+                    {:random random :session-id session-id
+                     :cipher-suites (mapv #(get suite/ids %) suites)
+                     :extensions exts})]
+      (ok {:tls/message msg :tls/session-id session-id}))))
+
+;; ------------------------------------------------------------------- ECH
+;;
+;; draft-ietf-tls-esni-25. Two ClientHellos: the inner one carries the real
+;; server name and is encrypted into the outer one, which carries the
+;; client-facing server's public_name. Which of the two the transcript
+;; started with is not known until ServerHello arrives, so both are kept.
+;;
+;; This client does not implement HelloRetryRequest at all -- see
+;; `tls.handshake/check-server-hello` -- so ECH's HRR path (draft s7.2.1) is
+;; unreachable from here rather than omitted. `tls.ech/hrr-accept-confirmation`
+;; exists and is tested; nothing in this namespace can reach it.
+
+(defn- build-ech-hellos
+  "The inner and outer ClientHellos, and everything needed to judge acceptance."
+  [provider {:keys [server-name suites] :as config} share ech-config]
+  (let [{:keys [config cipher-suite]} ech-config
+        public-name (apply str (map char (:public-name config)))
+        random ((:random provider) 32)
+        session-id ((:random provider) 32)
+        cipher-suites (mapv #(get suite/ids %) suites)]
+    (r/let-ok [inner-marker (ext/extension :encrypted_client_hello ech/encoded-inner-ech)
+               inner-exts (hello-extensions config server-name share
+                                            [(ext/->ext :encrypted_client_hello inner-marker)])
+               inner-msg (hs/client-hello {:random random :session-id session-id
+                                           :cipher-suites cipher-suites
+                                           :extensions inner-exts})]
+      (let [inner-body (vec (subvec (vec inner-msg) 4))
+            ;; Padding is not optional: without it the ciphertext length
+            ;; tracks the inner SNI length, which is the one thing ECH exists
+            ;; to hide. s6.1.3's scheme is deterministic, so two clients with
+            ;; the same profile pad alike.
+            pad (ech/recommended-padding (:maximum-name-length config)
+                                         (count server-name)
+                                         (count inner-body))]
+        (r/let-ok [encoded (ech/encode-inner inner-body [] pad)]
+          (let [kem (get dhkem/kems (:kem-id config))
+                eph (dhkem/derive-key-pair! kem ((:random provider) (:nsk kem)))
+                aead (get hpke/aeads (:aead-id cipher-suite))
+                sealed-length (+ (count encoded) (:nt aead))
+                placeholder-ok (ech/encode-outer-ech
+                                {:cipher-suite cipher-suite
+                                 :config-id (:config-id config)
+                                 :enc (:public eph)
+                                 :payload (vec (repeat sealed-length 0))})]
+            (r/let-ok [placeholder placeholder-ok
+                       ph-ext (ext/extension :encrypted_client_hello placeholder)
+                       outer-exts (hello-extensions config public-name share
+                                                    [(ext/->ext :encrypted_client_hello ph-ext)])
+                       partial-outer-msg (hs/client-hello
+                                          {:random random :session-id session-id
+                                           :cipher-suites cipher-suites
+                                           :extensions outer-exts})
+                       sealed (ech/seal config cipher-suite
+                                        (vec (subvec (vec partial-outer-msg) 4))
+                                        encoded eph)
+                       outer-msg (hs/message :client_hello (:tls/outer sealed))]
+              (ok {:tls/message outer-msg
+                   :tls/inner-message inner-msg
+                   :tls/inner-random random
+                   :tls/session-id session-id
+                   :tls/public-name public-name}))))))))
+
+(defn- transcript-first-message
+  "Which ClientHello the transcript starts with.
+
+   A one-line decision, and a named one, because it is invisible to every test
+   that does not complete a handshake: getting it wrong produces a client that
+   builds both hellos correctly, encrypts correctly, judges acceptance
+   correctly, and then derives keys from the wrong transcript. Measured --
+   forcing it to always return the outer left the whole unit suite green, and
+   only the live handshake noticed."
+  [accepted ch]
+  (if accepted (:tls/inner-message ch) (:tls/message ch)))
+
+(defn- ech-accepted?
+  "draft s6.1.4 and s7.2. The confirmation is a function of a transcript that
+   contains the place the confirmation will go -- so the ServerHello's last
+   eight random bytes are zeroed before hashing, and the result is compared
+   against the bytes that were there."
+  [h ech sh-raw]
+  (let [sh (vec sh-raw)
+        ;; 4-byte handshake header, then legacy_version(2), then random(32).
+        tail-start (+ 4 2 24)
+        zeroed (vec (concat (subvec sh 0 tail-start)
+                            (repeat 8 0)
+                            (subvec sh (+ tail-start 8))))
+        t (-> (tr/transcript) (tr/add (:tls/inner-message ech)) (tr/add zeroed))]
+    (r/let-ok [conf (ech/accept-confirmation h (:tls/inner-random ech)
+                                             (tr/digest t (:hash h)))]
+      (ok (ech/accepted? (subvec sh tail-start (+ tail-start 8)) conf)))))
 
 (def cert-alerts
   "`tls.cert` refusal reason -> the alert a peer would receive.
@@ -340,7 +443,17 @@
     (if (empty? suites)
       (error :insufficient_security :provider-supports-no-suite {})
       (r/let-ok [share (ok ((get-in provider [:x25519 :keypair])))
-                 ch (build-client-hello provider (assoc config :suites suites) share)]
+                 ech-choice (if-let [cl (get-in config [:ech :config-list])]
+                              (r/let-ok [parsed (ech/parse-config-list cl)]
+                                (if-let [c (ech/choose (:configs parsed))]
+                                  (ok c)
+                                  (error :handshake_failure :no-usable-ech-config
+                                         {:tls/offered (count (:configs parsed))
+                                          :tls/skipped (:skipped parsed)})))
+                              (ok nil))
+                 ch (if ech-choice
+                      (build-ech-hellos provider (assoc config :suites suites) share ech-choice)
+                      (build-client-hello provider (assoc config :suites suites) share))]
         (let [ch-msg (:tls/message ch)]
           (r/let-ok [ch-record (rec/plaintext-record :handshake ch-msg)]
             (do
@@ -365,9 +478,31 @@
                                suite-name (ok (get suite/by-id (:tls/cipher-suite neg)))
                                ste (suite/suite provider suite-name)
                                h (sch/hashes provider (:hash ste))]
+                      (r/let-ok
+                       [accepted (if (:tls/inner-message ch)
+                                   (ech-accepted? h ch (:tls/raw sh-msg))
+                                   (ok false))
+                        ;; draft s6.1.6: if the server rejected ECH the client
+                        ;; MUST NOT proceed as if it had not offered. The full
+                        ;; recovery -- authenticate to the public_name, read
+                        ;; retry_configs out of EncryptedExtensions, then abort
+                        ;; with ech_required -- is not implemented, and doing
+                        ;; half of it would mean acting on retry configs the
+                        ;; handshake had not yet authenticated. So this stops
+                        ;; here and says so.
+                        _ (if (and (:tls/inner-message ch) (not accepted))
+                            (error :ech_required :ech-rejected
+                                   {:tls/public-name (:tls/public-name ch)
+                                    :tls/note (str "the server did not accept ECH; "
+                                                   "draft s6.1.6 recovery is not implemented")})
+                            (ok true))]
                       (let [dhe ((get-in provider [:x25519 :dh])
                                  (:private share) (:tls/peer-key-share neg))
-                            t0 (-> (tr/transcript) (tr/add ch-msg) (tr/add (:tls/raw sh-msg)))
+                            ;; The transcript starts with whichever hello the
+                            ;; server actually used. That is the whole reason
+                            ;; both are kept until now.
+                            first-msg (transcript-first-message accepted ch)
+                            t0 (-> (tr/transcript) (tr/add first-msg) (tr/add (:tls/raw sh-msg)))
                             th (tr/digest t0 (:hash h))
                             early (sch/early-secret h)]
                         (r/let-ok [hs-secret (sch/handshake-secret h early dhe)
@@ -456,7 +591,7 @@
                                                                    :tls/read {:keys s-ap-keys :seq (atom 0)}
                                                                    :tls/exporter-master
                                                                    (r/val (sch/derive-secret h master "exp master" sfin-hash))
-                                                                   :tls/resumption-master nil})))))))))))))))))))))))))))))))))
+                                                                   :tls/resumption-master nil}))))))))))))))))))))))))))))))))))
 
 ;; --------------------------------------------------------- application data
 
