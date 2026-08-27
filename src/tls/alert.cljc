@@ -33,7 +33,13 @@
    :bad_certificate_status_response 113
    :unknown_psk_identity 115
    :certificate_required 116
-   :no_application_protocol 120})
+   :no_application_protocol 120
+   ;; draft-ietf-tls-esni-25 s11.2. The client sends this when it offered ECH
+   ;; and the server did not accept -- after completing the handshake, so the
+   ;; alert is encrypted and a network observer cannot tell it from any other
+   ;; fatal alert. That is the point: an observable "ECH was rejected here"
+   ;; would be the signal ECH exists to remove.
+   :ech_required 121})
 
 (def ^:private by-code (into {} (map (fn [[k v]] [v k])) descriptions))
 

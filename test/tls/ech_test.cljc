@@ -380,3 +380,120 @@
               (testing "and the tail is the whole ECHConfig, version and length included"
                 (is (= [0xfe 0x0d] (vec (take 2 (drop 8 (ech/config-info cfg))))))
                 (is (= (count (:raw cfg)) (- (count (ech/config-info cfg)) 8)))))))))))
+
+;; ── §6.1.7's rule on public_name ────────────────────────────────────────────
+
+(deftest a-public-name-must-be-a-host-name
+  ;; §6.1.7. This is applied to configurations, not to certificates, because
+  ;; the draft says a client that checks here need not repeat it later.
+  ;;
+  ;; It nearly shipped inverted. The first version split labels on the regex
+  ;; `\.` written with one escape too many, which matches a backslash followed
+  ;; by anything -- so no name ever split, every name was one label containing
+  ;; dots, and **every valid public name was rejected**. No test here noticed,
+  ;; because there was no test here. The live handshake noticed, on the first
+  ;; run after the check landed.
+  ;; `c/ascii` and not `(map int s)`. The latter is code points on the JVM and
+  ;; a vector of zeros under ClojureScript -- and this test walked into that
+  ;; on its first ClojureScript run, which is the third time in one afternoon.
+  ;; The check under test now compares bytes to byte constants and never sees
+  ;; a character at all; the test has to hand it bytes the same way.
+  (let [ok? (fn [s] (ech/valid-public-name? (c/ascii s)))]
+    (testing "ordinary host names"
+      (doseq [n ["cloudflare-ech.com" "example.com" "a" "public.example"
+                 "a-b.example.org" "x.12a" "xn--kgbechtv.example"]]
+        (is (ok? n) n)))
+
+    (testing "the final label must not read as a number"
+      ;; A name whose last label is all digits, or 0x-and-hex, is one that
+      ;; some resolvers and URL parsers take for an IPv4 literal. A client
+      ;; that authenticated a certificate for it would be authenticating
+      ;; something other than a host.
+      (doseq [n ["1.2.3.4" "example.123" "example.0x1f" "example.0X" "example.0xdeadbeef"
+                 "192.168.0.1" "0x7f000001"]]
+        (is (not (ok? n)) n)))
+
+    (testing "shape"
+      (doseq [n ["" "." ".x" "x." "a..b" "-a.com" "a-.com" "a_b.com" "a b.com"]]
+        (is (not (ok? n)) (pr-str n)))
+      (testing "and a non-ASCII byte, handed in directly"
+        ;; `c/ascii` refuses to build this, which is its job -- so the bytes
+        ;; are written out. A name arriving from a server's config is bytes,
+        ;; not a string, and this is what one of those looks like.
+        (is (not (ech/valid-public-name? [0x61 0xC3 0xA9 0x2E 0x63 0x6F 0x6D])))))
+
+    (testing "a label may be 63 octets and not 64"
+      (is (ok? (str (apply str (repeat 63 "a")) ".com")))
+      (is (not (ok? (str (apply str (repeat 64 "a")) ".com")))))
+
+    (testing "and the live configurations all pass, which is the point"
+      (doseq [{:keys [host ech]} live/live]
+        (let [res (ech/parse-config-list (b64->bytes ech))]
+          (when (r/ok? res)
+            (doseq [cfg (:configs (r/val res))]
+              (is (ech/valid-public-name? (:public-name cfg))
+                  (str host " publishes "
+                       (apply str (map char (:public-name cfg))))))))))))
+
+(deftest choose-skips-a-config-whose-public-name-is-not-a-host
+  (let [good (first (:configs (r/val (ech/parse-config-list
+                                      (b64->bytes (:ech (first live/live)))))))
+        bad (let [c (assoc good :public-name (vec (c/ascii "10.0.0.1")))]
+              (assoc c :raw (r/val (ech/encode-config c))))]
+    (is (some? (ech/choose [good])))
+    (is (nil? (ech/choose [bad]))
+        "runnable suite, unusable name")
+    (is (= (:config-id good) (:config-id (:config (ech/choose [bad good]))))
+        "and a list containing both picks the usable one")))
+
+;; ── retry configs ───────────────────────────────────────────────────────────
+
+(deftest retry-configs-are-an-ech-config-list
+  (let [cfg (first (:configs (r/val (ech/parse-config-list
+                                     (b64->bytes (:ech (first live/live)))))))
+        lst (r/val (c/write-vector 2 1 65535 :ECHConfigList (:raw cfg)))]
+    (testing "a valid list parses to the configs it carries"
+      (let [got (ech/parse-retry-configs lst)]
+        (is (r/ok? got))
+        (is (= 1 (count (r/val got))))
+        (is (= (:config-id cfg) (:config-id (first (r/val got)))))))
+    (testing "and a malformed one is an error, not an empty list"
+      ;; §6.1.6 says the client MUST abort with decode_error if this is not
+      ;; syntactically valid. Returning nothing would be a client that reads a
+      ;; corrupt retry config as "the server sent none" and disables ECH.
+      (is (r/error? (ech/parse-retry-configs (subvec (vec lst) 0 (- (count lst) 3)))))
+      (is (r/error? (ech/parse-retry-configs [])))
+      (is (r/error? (ech/parse-retry-configs (conj (vec lst) 0)))))))
+
+(deftest what-an-ech-extension-in-encrypted-extensions-means
+  ;; The first branch here cannot be reached by any test in this repository:
+  ;; it needs a server that accepts ECH and then violates §5 in the same
+  ;; handshake. So the decision is a named function and it is called directly.
+  (let [cfg (first (:configs (r/val (ech/parse-config-list
+                                     (b64->bytes (:ech (first live/live)))))))
+        lst (r/val (c/write-vector 2 1 65535 :ECHConfigList (:raw cfg)))
+        ext- {:tls/type :encrypted_client_hello :tls/data lst}]
+
+    (testing "absent — nothing to retry, and that is not an error"
+      (is (= {:tls/retry-configs nil}
+             (r/val (ech/encrypted-extensions-response false nil))))
+      (is (= {:tls/retry-configs nil}
+             (r/val (ech/encrypted-extensions-response true nil)))))
+
+    (testing "present after a rejection — the retry configs"
+      (let [got (ech/encrypted-extensions-response false ext-)]
+        (is (r/ok? got))
+        (is (= 1 (count (:tls/retry-configs (r/val got)))))
+        (is (= (:config-id cfg) (:config-id (first (:tls/retry-configs (r/val got))))))))
+
+    (testing "present after an acceptance — §5 says unsupported_extension"
+      (let [got (ech/encrypted-extensions-response true ext-)]
+        (is (r/error? got))
+        (is (= :ech-extension-after-acceptance (r/reason got)))
+        (is (= :unsupported_extension (r/alert got)))))
+
+    (testing "present but malformed — §6.1.6 says decode_error, not silence"
+      (let [got (ech/encrypted-extensions-response
+                 false (assoc ext- :tls/data (subvec (vec lst) 0 4)))]
+        (is (r/error? got))
+        (is (not= :ech-extension-after-acceptance (r/reason got)))))))
