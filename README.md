@@ -23,12 +23,34 @@ trust anchor. Read *What you must not assume* before using it for anything.
 
 ## What actually ran
 
-Two live handshakes, both reproduced by `scripts/` in this repo.
+Four live handshakes, all reproduced by `scripts/` in this repo.
 
-| against | suite | CertificateVerify | result |
-|---|---|---|---|
-| `openssl s_server` on loopback, Ed25519 certificate, OpenSSL 3.6.3 | `TLS_AES_128_GCM_SHA256` | `ed25519` | handshake, `GET /`, **7 KiB HTTP response**, `close_notify` |
-| **`kotobase.net:443`** (Cloudflare), over the public internet | `TLS_AES_128_GCM_SHA256` | `ecdsa_secp256r1_sha256` | handshake, 3-certificate chain, `GET /llms.txt`, **6,391-byte body**, `close_notify` |
+| against | suite | result |
+|---|---|---|
+| `openssl s_server` on loopback, Ed25519 certificate, OpenSSL 3.6.3 | `TLS_AES_128_GCM_SHA256` | handshake, `GET /`, **7 KiB HTTP response**, `close_notify` |
+| **`kotobase.net:443`** (Cloudflare), over the public internet | `TLS_AES_128_GCM_SHA256` | handshake, 3-certificate chain, `GET /llms.txt`, **6,391-byte body**, `close_notify` |
+| **`crypto.cloudflare.com:443`, with Encrypted ClientHello** | `TLS_AES_128_GCM_SHA256` | **the server accepted ECH** |
+| **`defo.ie:443`, with Encrypted ClientHello** | `TLS_AES_128_GCM_SHA256` | **the server accepted ECH** — a different operator, and a three-config list |
+
+The first two verified the server's `CertificateVerify` signature over the
+section 4.4.3 context string and the transcript, verified the server's
+`Finished`, sent their own `Finished`, and matched the leaf SPKI against a pin.
+
+The ECH pair are worth their own sentence. A real server decrypted a
+ClientHelloInner this client encrypted, used it, and said so by putting the
+acceptance confirmation into `ServerHello.random` — which this client
+recomputed from its own inner transcript and matched. **That is an independent
+implementation agreeing, and for ECH it is the only external evidence that
+exists**, because the draft is not an RFC and publishes no test vectors.
+
+And the control, because "accepted" from a server that accepts anything would
+look the same: flipping **one bit** of the config's public key, so the server
+cannot decrypt, gets `:ech-rejected` from both hosts.
+
+```sh
+clojure -M scripts/live_ech.clj crypto.cloudflare.com
+clojure -M scripts/live_ech.clj crypto.cloudflare.com corrupt   # must reject
+```
 
 Both verified the server's `CertificateVerify` signature over the section 4.4.3
 context string and the transcript, verified the server's `Finished`, sent their
@@ -206,10 +228,32 @@ its reconstruction, `ClientHelloOuterAAD`, the seal and open, and the
 acceptance confirmation. Both halves are here, client and client-facing
 server.
 
-**It is not wired into `tls.client`.** Offering ECH in a live handshake also
-needs HelloRetryRequest, §6.1.6's retry-config path, and a second transcript —
-and doing that halfway would produce a client that offers ECH and cannot tell
-whether it was accepted, which is worse than one that does not offer it.
+### Offering it
+
+```clojure
+(client/handshake provider transport
+  {:server-name "crypto.cloudflare.com"
+   :pin-spki-sha256 "…"
+   :ech {:config-list <ECHConfigList bytes, from the host's HTTPS record>}})
+```
+
+The client builds both hellos, sends the outer, and decides from
+`ServerHello.random` which one the server used — the transcript starts with
+whichever it was, which is why both are kept until then. The inner is padded
+by §6.1.3's scheme, without which the ciphertext length would track the inner
+SNI length: the one thing ECH exists to hide.
+
+**On rejection it stops**, with `:ech-rejected`. §6.1.6's recovery —
+authenticate to the `public_name`, read `retry_configs` out of
+EncryptedExtensions, then abort with `ech_required` — is not implemented, and
+doing half of it would mean acting on retry configs the handshake had not yet
+authenticated.
+
+**ECH's HelloRetryRequest path is unreachable rather than omitted.** This
+client does not implement HRR at all (`tls.handshake/check-server-hello`
+refuses it by name), so §7.2.1 cannot arise from here.
+`tls.ech/hrr-accept-confirmation` exists and is tested; nothing in
+`tls.client` can reach it.
 
 ### ECH is not an RFC and has no test vectors
 
@@ -237,6 +281,23 @@ MUST abort while reconstructing the inner. Each has its own reason and its own
 test. Three of them exist to stop a small ClientHelloOuter decompressing into
 a huge ClientHelloInner (§10.12.4); they are not tidiness.
 
+### What the offering is checked against
+
+There is no TLS server in the test suite, so the client's ECH output is
+checked against the property a real client-facing server checks: **the outer
+this client sends can be opened with the config's private key and reconstructs
+to exactly the inner hello the client composed.** That runs against
+`build-ech-hellos`'s real output rather than a hand-built fixture.
+
+The acceptance judgement is checked against an independently constructed
+ServerHello — built the way §7.2 describes it from the server's side — and
+against one computed over a *different* inner hello, which must not be
+mistaken for acceptance.
+
+And four inner names of four different lengths must produce **one** payload
+length. A client that offered ECH without padding would be advertising the
+length of the name it was hiding.
+
 ### What the ECH tests discriminate
 
 | break | failures | which tests go red |
@@ -247,13 +308,25 @@ a huge ClientHelloInner (§10.12.4); they are not tidiness.
 | skip the outer-extensions order check | **1** | the aborts test |
 | accept non-zero padding | **1** | the aborts test |
 | drop §6.1.3's no-SNI padding rule | **1** | the padding test |
+| the outer gets its own `legacy_session_id` | **4** | the shared-id test and the open |
+| the transcript always starts with the outer | **2** | the selection test **only** |
+| the ServerHello tail is not zeroed before hashing | **1** | the acceptance test |
+| the inner hello is not padded | **1** | the payload-length test |
 | *(restored)* | **0** | none |
 
-The first row is the one worth reading. **Both halves of ECH live in one
-namespace, so a symmetric change to the HPKE `info` leaves every round-trip
-green** — it is only wrong against a peer. Dropping the ECHConfig from the
-info broke nothing at all until `config-info` was pulled out and pinned to the
-draft's text. A two-sided test cannot check a value both sides agree on.
+Two rows are worth reading.
+
+**The HPKE `info`.** Both halves of ECH live in one namespace, so a
+*symmetric* change to it leaves every round-trip green — it is only wrong
+against a peer. Dropping the ECHConfig from the info broke nothing at all
+until `config-info` was pulled out and pinned to the draft's text. **A
+two-sided test cannot check a value both sides agree on.**
+
+**The transcript selection.** Getting it wrong gives a client that builds both
+hellos correctly, encrypts correctly, judges acceptance correctly, and then
+derives its keys from the wrong transcript. Forcing it to always pick the
+outer left the whole unit suite green — **only the live handshake noticed.**
+So the decision is a named function now, and it has a test.
 
 ### Two bugs this found, both in the shape the rules warn about
 

@@ -33,7 +33,7 @@
         ;; of the registry behind an injection point.
         io.github.kotoba-lang/org-ietf-hpke
         {:git/url "https://github.com/kotoba-lang/org-ietf-hpke.git"
-         :git/sha "52fadd435bd66d19fb30f94c2fa2ac15dc9aa19e"}}
+         :git/sha "51486cce0fc2f94e4173a100e8f8cb411aeb1422"}}
  :aliases
  {:test {:extra-paths ["test"]
          :extra-deps {io.github.cognitect-labs/test-runner
