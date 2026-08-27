@@ -43,6 +43,14 @@
    :post_handshake_auth 49
    :signature_algorithms_cert 50
    :key_share 51
+   ;; draft-ietf-tls-esni-25. Both are ECH's, and they are not
+   ;; interchangeable: `encrypted_client_hello` travels on the wire in both
+   ;; ClientHellos, and `ech_outer_extensions` exists ONLY inside an
+   ;; EncodedClientHelloInner -- the draft says it MUST NOT appear in either
+   ;; ClientHelloOuter or ClientHelloInner. Registering both here means a
+   ;; parser names them; keeping them apart is `tls.ech`'s job.
+   :ech_outer_extensions 0xfd00
+   :encrypted_client_hello 0xfe0d
    :renegotiation_info 0xff01})
 
 (def type-by-code (into {} (map (fn [[k v]] [v k])) types))
