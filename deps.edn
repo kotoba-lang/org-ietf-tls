@@ -23,7 +23,17 @@
         ;; this one.
         io.github.kotoba-lang/org-ietf-asn1
         {:git/url "https://github.com/kotoba-lang/org-ietf-asn1.git"
-         :git/sha "e106c53357cf6649f8d3185e68aba0c00470685f"}}
+         :git/sha "e106c53357cf6649f8d3185e68aba0c00470685f"}
+        ;; ECH (draft-ietf-tls-esni-25) encrypts ClientHelloInner with HPKE.
+        ;; This is the one dependency in this repository that is a real
+        ;; cryptographic implementation rather than a parser -- the provider
+        ;; seam exists for primitives the handshake itself needs, and an
+        ;; extension that names HPKE cipher suites by RFC 9180 identifier
+        ;; wants the library that owns those identifiers, not a second copy
+        ;; of the registry behind an injection point.
+        io.github.kotoba-lang/org-ietf-hpke
+        {:git/url "https://github.com/kotoba-lang/org-ietf-hpke.git"
+         :git/sha "52fadd435bd66d19fb30f94c2fa2ac15dc9aa19e"}}
  :aliases
  {:test {:extra-paths ["test"]
          :extra-deps {io.github.cognitect-labs/test-runner
@@ -38,6 +48,19 @@
   ;; its own kind of lie.
   :report {:extra-paths ["test"]
            :main-opts ["-m" "tls.report"]}
+
+  ;; The ClojureScript path, and it covers `tls.ech-test` only.
+  ;;
+  ;; Everything else in this suite is `.clj` because the cryptographic
+  ;; provider is injected and the one that exists is the JVM's. ECH's data
+  ;; plane is different: its crypto is `org-ietf-hpke`, which is portable, so
+  ;; the parser, the reconstruction and the confirmation derivation can all
+  ;; run on both runtimes -- and the codec underneath them is byte arithmetic,
+  ;; which is exactly where the two runtimes differ.
+  ;;
+  ;; Naming the one namespace rather than globbing is deliberate: a runner
+  ;; that silently found nothing to run would report success.
+  :cljs {:extra-paths ["test"]}
 
   ;; clj-kondo as a Clojars lib (no Homebrew/system install needed).
   :lint {:replace-deps {clj-kondo/clj-kondo {:mvn/version "2024.11.14"}}

@@ -194,6 +194,99 @@ TLS 1.2. What did exist and is used or is directly adjacent:
 | `kotoba-lang/org-ietf-tcp` | RFC 9293 TCP as a pure state machine — the layer below, for when there is no socket |
 | `kotoba-lang/org-ietf-ed25519` | Ed25519, for a provider without a JDK |
 
+## Encrypted ClientHello (`tls.ech`)
+
+**draft-ietf-tls-esni-25.** The client sends two ClientHellos: a
+`ClientHelloOuter` naming the client-facing server's `public_name`, and a
+`ClientHelloInner` — the real one, with the real SNI — encrypted into the
+outer's `encrypted_client_hello` extension with HPKE.
+
+This is the ECH **data plane**: configurations, `EncodedClientHelloInner` and
+its reconstruction, `ClientHelloOuterAAD`, the seal and open, and the
+acceptance confirmation. Both halves are here, client and client-facing
+server.
+
+**It is not wired into `tls.client`.** Offering ECH in a live handshake also
+needs HelloRetryRequest, §6.1.6's retry-config path, and a second transcript —
+and doing that halfway would produce a client that offers ECH and cannot tell
+whether it was accepted, which is worse than one that does not offer it.
+
+### ECH is not an RFC and has no test vectors
+
+Measured, not assumed: the datatracker gives `draft-ietf-tls-esni` no RFC
+number at revision 25, and the draft text contains no test-vector section. So
+none of the ECH tests are known-answer tests, and none are labelled as though
+they were. The evidence is of three kinds, kept apart:
+
+**Live configurations.** `test/tls/ech_configs.cljc` holds `ECHConfigList`
+values pulled from real HTTPS resource records — Cloudflare's, and defo.ie's,
+which publishes three configs in one list. Parsing bytes that are actually
+deployed is the only part of this that is not self-consistency.
+`scripts/fetch_ech_configs.cljs` refreshes them, and it carries **no sha256
+pin**, unlike every other generator in this workspace: servers rotate ECH keys
+daily by design, so pinning that input would make the script refuse every time
+it was right.
+
+**Two-sided round-trip.** Every client operation has a server-side counterpart
+in the same namespace, and the tests run both — including the compression
+path, where the inner hello names extensions instead of repeating them and the
+server puts the outer's copies back.
+
+**The aborts.** §5.1 names four conditions under which a client-facing server
+MUST abort while reconstructing the inner. Each has its own reason and its own
+test. Three of them exist to stop a small ClientHelloOuter decompressing into
+a huge ClientHelloInner (§10.12.4); they are not tidiness.
+
+### What the ECH tests discriminate
+
+| break | failures | which tests go red |
+|---|---|---|
+| the HPKE `info` drops the ECHConfig | **15** | the pinning test **only** |
+| seal without `ClientHelloOuterAAD` | **5** | the round-trips and the binding test |
+| keep the inner's `legacy_session_id` | **4** / **1** | two call sites, two tests |
+| skip the outer-extensions order check | **1** | the aborts test |
+| accept non-zero padding | **1** | the aborts test |
+| drop §6.1.3's no-SNI padding rule | **1** | the padding test |
+| *(restored)* | **0** | none |
+
+The first row is the one worth reading. **Both halves of ECH live in one
+namespace, so a symmetric change to the HPKE `info` leaves every round-trip
+green** — it is only wrong against a peer. Dropping the ECHConfig from the
+info broke nothing at all until `config-info` was pulled out and pinned to the
+draft's text. A two-sided test cannot check a value both sides agree on.
+
+### Two bugs this found, both in the shape the rules warn about
+
+**A context map silently replaced the error reason.** `tls.result/error`
+merges the caller's data *over* `{:tls/alert :tls/reason}`, so
+`(error :decrypt_error :ech-open-failed {:tls/reason ...})` reported the inner
+reason instead of the stable keyword. Nothing would have noticed if the tests
+asserted "an error happened" rather than **which** error.
+
+**A test's expected value hit the `(map int "…")` trap.** On the JVM that is
+code points; under ClojureScript it is a vector of zeros — the trap
+`hpke.kdf/ascii` documents, walked into by a test written to check exactly
+that kind of thing. The seven bytes of `"tls ech"` are now written out, with
+`(map char …)` back to the string as the cross-check.
+
+### The ClojureScript path covers the ECH tests, and only those
+
+The rest of this suite is `.clj` because the cryptographic provider is
+injected and the one that exists is the JVM's. ECH's data plane is different —
+its crypto is `org-ietf-hpke`, which is portable — so the parser, the
+reconstruction and the confirmation derivation run on both runtimes, and the
+codec underneath them is byte arithmetic, which is exactly where the two
+runtimes differ.
+
+```sh
+nbb --classpath "$(clojure -A:cljs -Spath)" scripts/verify-cljs.cljs
+```
+
+**922 assertions there; 1,472 for the whole suite on the JVM.** The runner
+names its one namespace rather than globbing, and **exits 2 if it executed no
+assertions at all** — a runner that quietly found nothing to run would
+otherwise report success.
+
 ## Test
 
 ```sh
