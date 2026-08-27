@@ -243,11 +243,41 @@ whichever it was, which is why both are kept until then. The inner is padded
 by §6.1.3's scheme, without which the ciphertext length would track the inner
 SNI length: the one thing ECH exists to hide.
 
-**On rejection it stops**, with `:ech-rejected`. §6.1.6's recovery —
-authenticate to the `public_name`, read `retry_configs` out of
-EncryptedExtensions, then abort with `ech_required` — is not implemented, and
-doing half of it would mean acting on retry configs the handshake had not yet
-authenticated.
+### On rejection (§6.1.6)
+
+The client does **not** stop at the ServerHello. It finishes the handshake
+against the `ECHConfig.public_name` — a different identity from the one the
+caller asked for, so `:ech {:public-name-pin "…"}` is what authenticates it —
+collects `retry_configs` from EncryptedExtensions, sends an `ech_required`
+alert, and returns an error.
+
+An error, not a connection, and the draft is explicit about why:
+authenticating for the public name **does not authenticate the origin**, so
+such a connection may never be reported as successful or carry application
+data. It exists to carry the retry configs out.
+
+If the public name does not authenticate, the error is the authentication's
+and the retry configs never surface — §6.1.6 says a client MUST NOT use them
+in that case, and the way to guarantee that is not to hand them back.
+
+Measured against a live server: offering ECH with a key Cloudflare does not
+hold gets a rejection, the handshake completes against `cloudflare-ech.com`,
+and the server hands back **one retry config** — a different `config_id` from
+the one its DNS record publishes.
+
+```
+rejected, as it must with a key the server does not hold
+  public name        cloudflare-ech.com
+  retry_configs      1 config(s) from the server:
+    id 75 kem 0x0020 name cloudflare-ech.com
+```
+
+A `public_name` that is not a host name is refused before any of that, when
+the config is chosen (§6.1.7): dot-separated LDH labels, and a final label
+that does not read as a number. A name whose last label is all digits or
+`0x`-and-hex is one some resolvers and URL parsers take for an **IPv4
+literal**, and a client that authenticated a certificate for it would be
+authenticating something other than a host.
 
 **ECH's HelloRetryRequest path is unreachable rather than omitted.** This
 client does not implement HRR at all (`tls.handshake/check-server-hello`
@@ -312,6 +342,11 @@ length of the name it was hiding.
 | the transcript always starts with the outer | **2** | the selection test **only** |
 | the ServerHello tail is not zeroed before hashing | **1** | the acceptance test |
 | the inner hello is not padded | **1** | the payload-length test |
+| the `public_name` split regex written `\\.` instead of `\.` | **14** | the host-name tests |
+| drop §6.1.7's IPv4-literal rule | **8** | the host-name tests |
+| an ECH extension after acceptance is allowed | **3** | the EncryptedExtensions test |
+| `choose` ignores the `public_name` | **1** | the choose test |
+| a malformed retry config becomes an empty list | **1** | the EncryptedExtensions test |
 | *(restored)* | **0** | none |
 
 Two rows are worth reading.
@@ -327,6 +362,27 @@ hellos correctly, encrypts correctly, judges acceptance correctly, and then
 derives its keys from the wrong transcript. Forcing it to always pick the
 outer left the whole unit suite green — **only the live handshake noticed.**
 So the decision is a named function now, and it has a test.
+
+**And the `public_name` check was wrong twice, the same way both times.** It
+takes a byte vector, and both wrong versions reached for characters.
+
+The first split labels on a regex with one escape too many, so the pattern
+matched a backslash followed by anything instead of a dot: nothing split,
+every name became one label containing dots, and **every valid public name was
+rejected**. There was no test for it yet — the live handshake failed on the
+first run after the check landed.
+
+The second classified characters with `(map int …)`, which is code points on
+the JVM and **zeros** under ClojureScript. The JVM suite was green; the
+ClojureScript one was not. Then the *test's* own helper did the same thing and
+had to be fixed too.
+
+It compares bytes to byte constants now and never sees a character at all,
+which has neither failure available to it. Fourteen assertions, both runtimes.
+
+That trap — `hpke.kdf/ascii` documents it — was walked into **three times in
+one afternoon** by code written to be careful about it. Documenting a trap is
+not the same as removing the shape that makes it reachable.
 
 ### Two bugs this found, both in the shape the rules warn about
 

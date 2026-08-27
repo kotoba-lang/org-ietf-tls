@@ -164,18 +164,93 @@
                      (and (get kdf/kdfs kdf-id) a (pos? (:nk a)))))
                  cipher-suites))))
 
+(def ^:private dot 0x2E)
+(def ^:private hyphen 0x2D)
+
+(defn- digit? [b] (<= 0x30 b 0x39))
+(defn- hex-digit? [b] (or (digit? b) (<= 0x41 b 0x46) (<= 0x61 b 0x66)))
+(defn- letter? [b] (or (<= 0x41 b 0x5A) (<= 0x61 b 0x7A)))
+
+(defn- ldh-label?
+  "An LDH label — RFC 5890 §2.3.1: ASCII letters, digits and hyphen, with the
+  hyphen not at either end, and 1 to 63 octets."
+  [label]
+  (and (<= 1 (count label) 63)
+       (every? (fn [b] (or (letter? b) (digit? b) (= hyphen b))) label)
+       (not= hyphen (first label))
+       (not= hyphen (last label))))
+
+(defn- ipv4-looking?
+  "All digits, or `0x`/`0X` followed by (possibly no) hex digits."
+  [label]
+  (or (and (seq label) (every? digit? label))
+      (and (>= (count label) 2)
+           (= 0x30 (nth label 0))
+           (contains? #{0x78 0x58} (nth label 1))
+           (every? hex-digit? (drop 2 label)))))
+
+(defn valid-public-name?
+  "§6.1.7. A `public_name` a client should be willing to authenticate against.
+
+  Two rules, and the second is the one with teeth. The first is shape: a
+  dot-separated sequence of LDH labels — ASCII letters, digits and hyphen,
+  hyphen not at either end of a label, labels of 1 to 63 octets, and no
+  leading or trailing dot.
+
+  The second says the **final** label must not be all digits, nor `0x`/`0X`
+  followed by hex. That is not tidiness: a name whose last label reads as a
+  number is a name some resolvers and URL parsers interpret as an **IPv4
+  literal**, and a client that authenticated a certificate for such a name
+  would be authenticating something other than a host.
+
+  Applied to configurations rather than to certificates, because §6.1.7 says
+  a client that checks here does not need to repeat the check later.
+
+  ## It works on the bytes, and never on a string
+
+  Two versions of this were wrong before this one, and both for the same
+  reason — the value is a byte vector and the checks kept being written
+  against characters:
+
+  - splitting labels on a regex with one escape too many, so the pattern
+    matched a backslash followed by anything instead of a dot: nothing ever
+    split, every name became one label containing dots, and **every valid
+    name was rejected**
+  - classifying characters with `(int ch)`, which is a code point on the JVM
+    and `0` under ClojureScript — the trap `hpke.kdf/ascii` documents
+
+  Comparing bytes to byte constants has neither failure available to it."
+  [name-bytes]
+  (let [bs (mapv #(bit-and (int %) 0xFF) (seq name-bytes))]
+    (and (seq bs)
+         (not= dot (first bs))
+         (not= dot (last bs))
+         (let [labels (reduce (fn [acc b]
+                                (if (= dot b)
+                                  (conj acc [])
+                                  (conj (pop acc) (conj (peek acc) b))))
+                              [[]] bs)]
+           (and (seq labels)
+                (every? ldh-label? labels)
+                (not (ipv4-looking? (last labels))))))))
+
 (defn choose
   "The first config with a runnable suite, and that suite.
 
   \"First\" is the draft's own order: §5 says the list is in decreasing order
   of preference, so the server's preference wins over any ranking a client
-  might invent."
+  might invent.
+
+  A config whose `public_name` is not a valid host name is skipped even if its
+  suite runs — §6.1.7. The client will have to authenticate a certificate for
+  that name if the server rejects ECH, and a name that reads as an IPv4
+  literal is not a host to authenticate."
   [configs]
-  (or (first (keep (fn [cfg]
-                     (when-let [s (first (runnable-suites cfg))]
-                       {:config cfg :cipher-suite s}))
-                   configs))
-      nil))
+  (first (keep (fn [cfg]
+                 (when (and (valid-public-name? (:public-name cfg))
+                            (seq (runnable-suites cfg)))
+                   {:config cfg :cipher-suite (first (runnable-suites cfg))}))
+               configs)))
 
 (defn suite-of [config cipher-suite]
   (hpke/suite (get dhkem/kems (:kem-id config))
@@ -506,6 +581,48 @@
                                :tls/context (:context setup)}))))))))))))))
 
 ;; ── acceptance confirmation, §7.2 ────────────────────────────────────────────
+
+(defn parse-retry-configs
+  "`ECHEncryptedExtensions { ECHConfigList retry_configs; }` — §5.
+
+  §6.1.6 requires the client to check this is syntactically valid and to abort
+  with `decode_error` if not, so a parse failure here is not something to work
+  around.
+
+  **A caller must not act on the result until the handshake has authenticated
+  the `public_name`.** These arrive in EncryptedExtensions, which is encrypted
+  under keys derived from a handshake that has not yet been authenticated at
+  that point; §6.1.6 says in as many words that if authentication fails the
+  client MUST NOT use them. `tls.client` returns them only on the path where
+  that authentication succeeded."
+  [data]
+  (r/let-ok [parsed (parse-config-list (vec data))]
+    (ok (:configs parsed))))
+
+(defn encrypted-extensions-response
+  "What an `encrypted_client_hello` in EncryptedExtensions means, given whether
+  ECH was accepted. Returns `{:tls/retry-configs …}`.
+
+  Both of the draft's rules live here, and both are refusals:
+
+  - **§5**: the server may send this only in response to the *outer* variant.
+    After accepting ECH there is nothing to retry, and sending it anyway gets
+    `unsupported_extension`.
+  - **§6.1.6**: if present, it MUST be syntactically valid, or `decode_error`.
+    Not `ignore what does not parse` — a client that read a corrupt retry
+    config as `the server sent none` would conclude ECH was securely disabled
+    and stop offering it, which is the downgrade the alert exists to prevent.
+
+  A named function because the first branch is **unreachable from any test in
+  this repository**: reaching it needs a server that accepts ECH and then
+  violates §5 in the same handshake. Nothing here can produce one, and a
+  branch nothing can reach is a branch nothing is checking."
+  [accepted ech-extension]
+  (cond
+    (nil? ech-extension) (ok {:tls/retry-configs nil})
+    accepted (error :unsupported_extension :ech-extension-after-acceptance {})
+    :else (r/let-ok [cs (parse-retry-configs (:tls/data ech-extension))]
+            (ok {:tls/retry-configs cs}))))
 
 (defn accept-confirmation
   "§7.2. The eight bytes the backend server writes over the tail of

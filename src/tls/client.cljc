@@ -482,20 +482,16 @@
                        [accepted (if (:tls/inner-message ch)
                                    (ech-accepted? h ch (:tls/raw sh-msg))
                                    (ok false))
-                        ;; draft s6.1.6: if the server rejected ECH the client
-                        ;; MUST NOT proceed as if it had not offered. The full
-                        ;; recovery -- authenticate to the public_name, read
-                        ;; retry_configs out of EncryptedExtensions, then abort
-                        ;; with ech_required -- is not implemented, and doing
-                        ;; half of it would mean acting on retry configs the
-                        ;; handshake had not yet authenticated. So this stops
-                        ;; here and says so.
-                        _ (if (and (:tls/inner-message ch) (not accepted))
-                            (error :ech_required :ech-rejected
-                                   {:tls/public-name (:tls/public-name ch)
-                                    :tls/note (str "the server did not accept ECH; "
-                                                   "draft s6.1.6 recovery is not implemented")})
-                            (ok true))]
+                        ;; draft s6.1.6: when the server rejects ECH the
+                        ;; client does NOT stop here. It finishes the
+                        ;; handshake against the public_name, collects
+                        ;; retry_configs, and only then aborts -- because the
+                        ;; retry configs arrive encrypted under a handshake
+                        ;; that is not yet authenticated, and acting on them
+                        ;; before it is would be taking configuration from
+                        ;; whoever answered the connection.
+                        ech-rejected (ok (boolean (and (:tls/inner-message ch)
+                                                       (not accepted))))]
                       (let [dhe ((get-in provider [:x25519 :dh])
                                  (:private share) (:tls/peer-key-share neg))
                             ;; The transcript starts with whichever hello the
@@ -518,7 +514,12 @@
                                 (if (not= :encrypted_extensions (:tls/type ee-m))
                                   (error :unexpected_message :expected-encrypted-extensions
                                          {:tls/type (:tls/type ee-m)})
-                                  (r/let-ok [_ (hs/parse-encrypted-extensions (:tls/body ee-m))
+                                  (r/let-ok [ee-parsed (hs/parse-encrypted-extensions (:tls/body ee-m))
+                                             ech-ee (ech/encrypted-extensions-response
+                                                     accepted
+                                                     (ext/find-ext (:tls/extensions ee-parsed)
+                                                                   :encrypted_client_hello))
+                                             retry-configs (ok (:tls/retry-configs ech-ee))
                                              cert-raw (next-handshake! hstream)
                                              cert-m (hs/split cert-raw)]
                                     (let []
@@ -536,9 +537,20 @@
                                         (r/let-ok [cert (lift (cert/parse-certificate-message
                                                               (:tls/body cert-m)))
                                                    leaf (ok (:tls/leaf cert))
-                                                   auth (authenticate-peer raw-provider config leaf
-                                                                           (:tls/entries cert)
-                                                                           (:server-name config))
+                                                   ;; s6.1.7: when ECH was rejected the
+                                                   ;; connection is authenticated for the
+                                                   ;; PUBLIC name, not the one the caller
+                                                   ;; asked for -- and a success here still
+                                                   ;; does not authenticate the origin.
+                                                   auth (let [c (if ech-rejected
+                                                                  (assoc config
+                                                                         :server-name (:tls/public-name ch)
+                                                                         :pin-spki-sha256
+                                                                         (get-in config [:ech :public-name-pin]))
+                                                                  config)]
+                                                          (authenticate-peer raw-provider c leaf
+                                                                             (:tls/entries cert)
+                                                                             (:server-name c)))
                                                    cv-raw (next-handshake! hstream)
                                                    cv-m (hs/split cv-raw)]
                                           (let [t-cert (-> t0 (tr/add ee) (tr/add cert-raw))]
@@ -578,7 +590,29 @@
                                                               ;; middlebox compatibility, RFC 8446 appendix D.4
                                                               (send! transport ccs)
                                                               (send! transport fin-record)
-                                                              (ok {:tls/suite (:tls/suite ste)
+                                                              (if ech-rejected
+                                                                ;; s6.1.6 and s6.1.7. The handshake
+                                                                ;; completed and the public name
+                                                                ;; authenticated -- and that is still
+                                                                ;; not the origin, so this MUST NOT be
+                                                                ;; reported as a successful connection.
+                                                                ;; The alert goes out encrypted, under
+                                                                ;; the application keys, so an observer
+                                                                ;; cannot tell it from any other fatal
+                                                                ;; alert.
+                                                                (let [a (rec/seal ste c-ap-keys 0 :alert
+                                                                                  (alert/encode :ech_required :fatal))]
+                                                                  (when (r/ok? a) (send! transport (r/val a)))
+                                                                  (error :ech_required :ech-rejected
+                                                                         {:tls/public-name (:tls/public-name ch)
+                                                                          :tls/public-name-authentication auth
+                                                                          :tls/retry-configs retry-configs
+                                                                          :tls/note (str "the server did not accept ECH; the "
+                                                                                         "public name authenticated, so the "
+                                                                                         "retry configs may be used for a new "
+                                                                                         "connection -- this one may not carry "
+                                                                                         "application data")}))
+                                                                (ok {:tls/suite (:tls/suite ste)
                                                                    :tls/suite-value ste
                                                                    :tls/hash h
                                                                    :tls/reader st
@@ -591,7 +625,7 @@
                                                                    :tls/read {:keys s-ap-keys :seq (atom 0)}
                                                                    :tls/exporter-master
                                                                    (r/val (sch/derive-secret h master "exp master" sfin-hash))
-                                                                   :tls/resumption-master nil}))))))))))))))))))))))))))))))))))
+                                                                   :tls/resumption-master nil})))))))))))))))))))))))))))))))))))
 
 ;; --------------------------------------------------------- application data
 

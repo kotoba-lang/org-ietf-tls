@@ -13,6 +13,17 @@
 ;; check this repository can run is the two halves of `tls.ech` agreeing with
 ;; each other.
 ;;
+;; The corrupt run is also the only way to exercise draft s6.1.6 against a
+;; real deployment: the server cannot decrypt, rejects ECH, and the client
+;; finishes the handshake against the public_name to collect retry_configs
+;; before aborting with ech_required.
+;;
+;; NOTE what this script does not check. It passes :insecure-skip-peer-auth,
+;; so the public name is not actually authenticated here -- s6.1.7 requires
+;; that before the retry configs may be used, and a caller that wants them
+;; must pass :ech {:public-name-pin ...}. The script reports what the server
+;; sent; it is not a demonstration that acting on it would be safe.
+;;
 ;; It talks to the public internet and it depends on someone else's deployment,
 ;; so it is a script and not a test.
 (require '[tls.client :as client] '[tls.result :as r]
@@ -64,7 +75,17 @@
                                :ech {:config-list cfg}})]
     (cond
       (and corrupt? (r/error? res) (= :ech-rejected (r/reason res)))
-      (println "rejected, as it must with a key the server does not hold")
+      (let [e (r/err res)]
+        (println "rejected, as it must with a key the server does not hold")
+        (println "  public name       " (:tls/public-name e))
+        (println "  its authentication" (pr-str (:tls/public-name-authentication e)))
+        (if-let [cs (seq (:tls/retry-configs e))]
+          (do (println "  retry_configs     " (count cs) "config(s) from the server:")
+              (doseq [c cs]
+                (println "    id" (:config-id c)
+                         "kem" (format "0x%04x" (:kem-id c))
+                         "name" (apply str (map char (:public-name c))))))
+          (println "  retry_configs      none")))
 
       corrupt?
       (do (println "A CORRUPTED CONFIG WAS ACCEPTED -- THIS IS A BUG:" (pr-str res))
