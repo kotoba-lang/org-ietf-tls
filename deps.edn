@@ -15,7 +15,7 @@
  ;; touch `src/`.
  :deps {io.github.kotoba-lang/org-ietf-x509
         {:git/url "https://github.com/kotoba-lang/org-ietf-x509.git"
-         :git/sha "ae69a33c9e9b674c9def7056fd05914c6259b8ca"}
+         :git/sha "8aeddb0624327e4beff91926c610b0ab5df704c8"}
         ;; Direct rather than only transitive: `tls.cert` reads
         ;; `subjectAltName`'s inner DER itself (see `leaf-dns-names`) and names
         ;; algorithm OIDs through `asn1.oid`. A transitive dependency that a

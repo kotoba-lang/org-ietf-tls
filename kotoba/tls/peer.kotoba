@@ -74,7 +74,7 @@
 ;; second copy of either comparison (ADR-2608261100).
 
 (ns tls.peer
-  (:export [normalised-instant? validity-problem name-match]))
+  (:export [main normalised-instant? validity-problem name-match]))
 
 ;; --- bytes ------------------------------------------------------------------------
 
@@ -225,3 +225,27 @@
     (< (cmp now not-before 0) 0) :certificate-not-yet-valid
     (> (cmp now not-after 0) 0) :certificate-expired
     :else :none))
+
+;; --- the artifact's own conformance check ------------------------------------------
+;;
+;; `main` is the browser profile's entry point -- `runtime/browser-host.mjs`
+;; refuses to instantiate a module without one -- and it is not a stub. It
+;; runs the two findings back through the decisions above and answers 0 only
+;; when each still decides the way this object was built to decide, so a
+;; COMPILED artifact can be asked whether it is itself by a host that knows
+;; nothing about TLS.
+;;
+;; Two, and the names are three labels of one letter, because a module's
+;; fuel is a private global baked in at compile time and the default is 512
+;; -- spent over the life of an INSTANCE, so `main`'s calls share one
+;; budget. Measured: the two findings written with realistic names is
+;; `unreachable`, while each of them called on its own from a fresh
+;; instance is fine. The native backends put a second bound on the same
+;; function, evaluating it as a compile-time oracle. The wider check lives
+;; in the suite, which has neither limit.
+
+(defn main [] :i64
+  (cond
+    (if (= (name-match "*.a.b" "*.a.b") :wanted-is-a-wildcard) false true) 1
+    (if (= (name-match "*.a.b" "c.a.b") :match) false true) 2
+    :else 0))
