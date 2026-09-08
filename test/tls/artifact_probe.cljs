@@ -18,7 +18,7 @@
   (:require ["node:fs" :as fs]
             ["node:child_process" :as cp]
             ["node:path" :as path]
-            [clojure.string :as str]))
+            [kotoba.lang.text :as str]))
 
 (def cases
   [["name-match" "*.example.com" "a.example.com"]

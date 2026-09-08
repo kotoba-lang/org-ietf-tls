@@ -17,7 +17,7 @@
 (ns extract-rfc8448
   (:require ["node:fs" :as fs]
             ["node:crypto" :as crypto]
-            [clojure.string :as str]))
+            [kotoba.lang.text :as str]))
 
 (def source-url "https://www.rfc-editor.org/rfc/rfc8448.txt")
 
