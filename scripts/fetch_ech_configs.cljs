@@ -17,7 +17,7 @@
 
       nbb scripts/fetch_ech_configs.cljs 2026-08-27"
   (:require ["fs" :as fs]
-            [clojure.string :as str]))
+            [kotoba.lang.text :as str]))
 
 (def hosts ["crypto.cloudflare.com" "cloudflare-ech.com" "defo.ie"])
 
