@@ -10,7 +10,7 @@
 
   Each test also names what it broke, so that `the break and the report agree`
   is checkable by a reader rather than assumed."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [kotoba.lang.text] [clojure.test :refer [deftest testing is]]
             [tls.cert :as cert]
             [tls.client :as client]
             [tls.codec :as c]
@@ -326,7 +326,7 @@
             "an [:ok ...] must carry what it does NOT mean")))
     (testing "an upper-case pin is the same pin"
       (is (r/ok? (auth @harness/array-provider
-                       {:pin-spki-sha256 (clojure.string/upper-case real-pin)}
+                       {:pin-spki-sha256 (kotoba.lang.text/upper real-pin)}
                        leaf entries nil))))
     (testing "the explicit opt-out says so in its result"
       (let [ok (r/val (auth @harness/array-provider {:insecure-skip-peer-auth true} leaf entries nil))]

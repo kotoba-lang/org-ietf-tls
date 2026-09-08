@@ -21,7 +21,7 @@
   33-byte session id is *encodable* and only the declared bound rejects it.
   `read-vector` and `write-vector` both take the bound and enforce it."
   (:require [tls.result :as r :refer [ok error]]
-            [clojure.string :as str]))
+            [kotoba.lang.text :as str]))
 
 ;; ---------------------------------------------------------------- integers
 

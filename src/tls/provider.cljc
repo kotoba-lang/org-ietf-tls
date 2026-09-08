@@ -62,7 +62,7 @@
 
       (let [[tag p] (tls.provider/validate (tls.provider.jvm/provider))]
         (case tag :ok (use p) :error (refuse p)))"
-  (:require [clojure.string :as str]))
+  (:require [kotoba.lang.text :as str]))
 
 ;; ---------------------------------------------------------------------------
 ;; The contract, as data

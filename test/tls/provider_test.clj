@@ -19,7 +19,7 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [tls.provider :as p]
             [tls.provider.jvm :as jvm])
   (:import [java.security KeyFactory AlgorithmParameters]
