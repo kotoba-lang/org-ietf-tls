@@ -43,7 +43,7 @@
     context string and the transcript, and verifies against the leaf's SPKI
   - the server's `Finished` verifies against the handshake traffic secret
   - the peer's SPKI matches the pin, when one is given"
-  (:require [tls.alert :as alert]
+  (:require [kotoba.lang.text] [tls.alert :as alert]
             [tls.cert :as cert]
             [tls.codec :as c]
             [tls.extension :as ext]
@@ -409,7 +409,7 @@
       (let [res (lift (cert/authenticate-peer
                        array-provider
                        {:tls/chain entries
-                        :tls/expect (cond-> {:tls/spki-pins #{(clojure.string/lower-case pin-spki-sha256)}}
+                        :tls/expect (cond-> {:tls/spki-pins #{(kotoba.lang.text/lower pin-spki-sha256)}}
                                       (not (false? check-server-name?))
                                       (assoc :tls/server-name server-name)
                                       (nil? now) (assoc :tls/check-validity? false))

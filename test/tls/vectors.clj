@@ -10,7 +10,7 @@
   than by name alone matters -- `PRK` appears seventeen times, and a lookup
   that returned the first match would silently compare the wrong derivation
   and pass."
-  (:require [clojure.edn :as edn]
+  (:require [kotoba.lang.text] [clojure.edn :as edn]
             [clojure.java.io :as io]))
 
 (def fixture
@@ -26,7 +26,7 @@
        (filter (fn [b]
                  (and (or (nil? actor) (= actor (:actor b)))
                       (or (nil? step) (and (:step b)
-                                           (clojure.string/includes? (:step b) step)))
+                                           (kotoba.lang.text/includes? (:step b) step)))
                       (or (nil? label) (= label (:label b))))))))
 
 (defn one

@@ -14,7 +14,7 @@
   (:require [asn1.core :as asn1]
             [asn1.oid :as oid]
             [clojure.java.io :as io]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [tls.cert :as cert]
             [tls.provider :as tls-provider]

@@ -13,7 +13,12 @@
  ;; answers `identical` for each. The x509 pin moved that day for
  ;; `kotoba/x509/validity.kotoba`, which adds a guest and a test and does not
  ;; touch `src/`.
- :deps {io.github.kotoba-lang/org-ietf-x509
+ :deps {
+        ;; kotoba.lang.text, not clojure.string. Pinned as an explicit floor:
+        ;; tools.deps takes the NEWEST sha it is shown, so without a floor here
+        ;; this repo silently rides whatever a sibling happens to name.
+        io.github.kotoba-lang/text {:git/sha "73bdb13ae7a3d004b44bca08be03a3191157a38f"}
+       io.github.kotoba-lang/org-ietf-x509
         {:git/url "https://github.com/kotoba-lang/org-ietf-x509.git"
          :git/sha "8aeddb0624327e4beff91926c610b0ab5df704c8"}
         ;; Direct rather than only transitive: `tls.cert` reads

@@ -45,7 +45,7 @@
   and a key change is."
   (:require [asn1.core :as asn1]
             [asn1.oid :as oid]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [x509.core :as x509]))
 
 ;; ── refusals ─────────────────────────────────────────────────────────────────
@@ -648,8 +648,8 @@
   interoperable and a client that honours them turns one compromised label into
   a range."
   [presented wanted]
-  (let [p (strip-root-dot (str/lower-case (str presented)))
-        w (strip-root-dot (str/lower-case (str wanted)))
+  (let [p (strip-root-dot (str/lower (str presented)))
+        w (strip-root-dot (str/lower (str wanted)))
         pl (str/split p #"\." -1)
         wl (str/split w #"\." -1)]
     (cond

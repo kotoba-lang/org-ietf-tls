@@ -28,7 +28,7 @@
 ;; so it is a script and not a test.
 (require '[tls.client :as client] '[tls.result :as r]
          '[tls.provider.jvm :as jvm] '[tls.transport.jvm :as tp]
-         '[clojure.string :as str])
+         '[kotoba.lang.text :as str])
 
 (defn- doh-ech
   "The `ech=` parameter of the host's HTTPS RR, as bytes."
