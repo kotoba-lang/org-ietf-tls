@@ -44,7 +44,7 @@
  :aliases
  {:test {:extra-paths ["test"]
          :extra-deps {io.github.cognitect-labs/test-runner
-                      {:git/tag "v0.5.1" :git/sha "dfb30dd"}
+                      {:git/tag "v0.5.1" :git/sha "dfb30dd6605cb6c0efc275e1df1736f6e90d4d73"}
                       ;; The Kotoba compiler and KIR interpreter, so
                       ;; `kotoba/tls/peer.kotoba` is driven by the suite
                       ;; rather than described by it.
