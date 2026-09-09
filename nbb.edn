@@ -3,7 +3,7 @@
 ;; there is invisible to them.
 ;;
 ;; :paths and every sha below are COPIED from deps.edn, not chosen here.
-{:paths ["src" "resources"]
+{:paths ["src" "resources" "."]
  :deps {
         ;; Declared HERE and not only in deps.edn: nbb reads nbb.edn and does NOT
         ;; read deps.edn or bb.edn, and the .cljs in this repo are run as
