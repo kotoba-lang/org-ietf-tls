@@ -62,7 +62,7 @@ whole secret ladder, the serialized `HkdfLabel` info blocks checked separately
 from their outputs, both directions' traffic keys, all six protected records
 decrypted AND re-encrypted to identical ciphertext, both `Finished` messages,
 and the resumption PSK. The vectors are extracted from the RFC's own text by
-`scripts/extract_rfc8448.cljs`, which refuses any block that does not reach
+`scripts/extract_rfc8448.cljk`, which refuses any block that does not reach
 its own declared octet count; the fixture records the source SHA-256.
 
 Two live handshakes:

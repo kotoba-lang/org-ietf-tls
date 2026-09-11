@@ -1,6 +1,6 @@
 ;; A live handshake WITH Encrypted ClientHello, against a server that serves it.
 ;;
-;;   clojure -M scripts/live_ech.clj [host] [corrupt]
+;;   clojure -M scripts/live_ech.cljk [host] [corrupt]
 ;;
 ;; The ECHConfigList is fetched from the host's HTTPS resource record over
 ;; DNS-over-HTTPS, which is where a real client gets it. Nothing is pinned:

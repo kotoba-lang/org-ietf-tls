@@ -16,7 +16,7 @@
 
   So the evidence here is of three kinds, and they are kept apart:
 
-  - **live configurations.** `test/tls/ech_configs.cljc` holds `ECHConfigList`
+  - **live configurations.** `test/tls/ech_configs.cljk` holds `ECHConfigList`
     values published in real HTTPS resource records — Cloudflare's and
     defo.ie's, the latter carrying three configs. Parsing bytes that are
     actually deployed is the only part of this that is not self-consistency.

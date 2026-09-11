@@ -48,8 +48,8 @@ look the same: flipping **one bit** of the config's public key, so the server
 cannot decrypt, gets `:ech-rejected` from both hosts.
 
 ```sh
-clojure -M scripts/live_ech.clj crypto.cloudflare.com
-clojure -M scripts/live_ech.clj crypto.cloudflare.com corrupt   # must reject
+clojure -M scripts/live_ech.cljk crypto.cloudflare.com
+clojure -M scripts/live_ech.cljk crypto.cloudflare.com corrupt   # must reject
 ```
 
 Both verified the server's `CertificateVerify` signature over the section 4.4.3
@@ -87,7 +87,7 @@ serialized `HkdfLabel`, every protected record. Section 3 is reproduced here
 - both `Finished` messages' `finished_key` and `verify_data`
 - the resumption PSK
 
-The vectors are **not transcribed by hand**. `scripts/extract_rfc8448.cljs`
+The vectors are **not transcribed by hand**. `scripts/extract_rfc8448.cljk`
 parses them out of the RFC's own text; each block in the RFC declares its own
 octet count and the extractor refuses to emit one that does not reach it
 exactly. The fixture records the SHA-256 of the input it came from
@@ -292,11 +292,11 @@ number at revision 25, and the draft text contains no test-vector section. So
 none of the ECH tests are known-answer tests, and none are labelled as though
 they were. The evidence is of three kinds, kept apart:
 
-**Live configurations.** `test/tls/ech_configs.cljc` holds `ECHConfigList`
+**Live configurations.** `test/tls/ech_configs.cljk` holds `ECHConfigList`
 values pulled from real HTTPS resource records — Cloudflare's, and defo.ie's,
 which publishes three configs in one list. Parsing bytes that are actually
 deployed is the only part of this that is not self-consistency.
-`scripts/fetch_ech_configs.cljs` refreshes them, and it carries **no sha256
+`scripts/fetch_ech_configs.cljk` refreshes them, and it carries **no sha256
 pin**, unlike every other generator in this workspace: servers rotate ECH keys
 daily by design, so pinning that input would make the script refuse every time
 it was right.
@@ -408,7 +408,7 @@ codec underneath them is byte arithmetic, which is exactly where the two
 runtimes differ.
 
 ```sh
-nbb --classpath "$(clojure -A:cljs -Spath)" scripts/verify-cljs.cljs
+nbb --classpath "$(clojure -A:cljs -Spath)" scripts/verify-cljs.cljk
 ```
 
 **922 assertions there; 1,472 for the whole suite on the JVM.** The runner
@@ -446,7 +446,7 @@ suite that could not measure has not found a bug, and reporting one is its own
 kind of lie. It refuses to report a pass on zero vectors compared or zero
 refusals exercised.
 
-Live runs are `scripts/live_loopback.clj` and `scripts/live_kotobase.clj`; they
+Live runs are `scripts/live_loopback.cljk` and `scripts/live_kotobase.cljk`; they
 are not part of the default suite because they need a network.
 
 Apache-2.0.
