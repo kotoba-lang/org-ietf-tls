@@ -5,7 +5,7 @@
 ;;   openssl s_server -accept 44443 -cert ed.crt -key ed.key -tls1_3 -www &
 ;;   PIN=$(openssl x509 -in ed.crt -pubkey -noout | openssl pkey -pubin -outform DER \
 ;;          | openssl dgst -sha256 -r | cut -d' ' -f1)
-;;   clojure -M scripts/live_loopback.clj $PIN
+;;   clojure -M scripts/live_loopback.cljk $PIN
 ;;
 ;; Not part of the default suite: it needs a listening server, and a test that
 ;; silently passes when its server is absent is the exact failure mode this

@@ -53,7 +53,7 @@
         {:status :unavailable
          :detail (str "kotoba=" (boolean kotoba) " nbb=" (boolean nbb)
                       " runtime=" (boolean runtime) " AMU_ROOT=" amu-root)}
-        (let [r (shell/sh nbb "test/tls/artifact_probe.cljs" kotoba amu-root)
+        (let [r (shell/sh nbb "test/tls/artifact_probe.cljk" kotoba amu-root)
               parsed (try (edn/read-string (str/trim (:out r))) (catch Exception _ nil))]
           (cond
             (nil? parsed) {:status :probe-unreadable :detail (str (:out r) (:err r))}

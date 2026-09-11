@@ -3,7 +3,7 @@
 ;; The JVM suite drives the guest through the KIR interpreter, which is not
 ;; the thing that ships. This runs the `.wasm` the public CLI produces, on
 ;; real `WebAssembly`, through amu's own `runtime/browser-host.mjs`, and
-;; prints what it answered so `test/tls/peer_artifact_test.clj` can hold it against the
+;; prints what it answered so `test/tls/peer_artifact_test.cljk` can hold it against the
 ;; interpreter.
 ;;
 ;; nbb rather than a `.mjs`: this workspace does not add raw JavaScript
