@@ -15,7 +15,7 @@
   workspace. Pinning an input that is *designed* to change would make the
   script refuse every time it was right.
 
-      nbb scripts/fetch_ech_configs.cljk 2026-08-27"
+      kbb --backend sci scripts/fetch_ech_configs.cljk 2026-08-27"
   (:require ["fs" :as fs]
             [kotoba.lang.text :as str]))
 

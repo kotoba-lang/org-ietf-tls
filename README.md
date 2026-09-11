@@ -48,8 +48,8 @@ look the same: flipping **one bit** of the config's public key, so the server
 cannot decrypt, gets `:ech-rejected` from both hosts.
 
 ```sh
-clojure -M scripts/live_ech.cljk crypto.cloudflare.com
-clojure -M scripts/live_ech.cljk crypto.cloudflare.com corrupt   # must reject
+kbb -M scripts/live_ech.cljk crypto.cloudflare.com
+kbb -M scripts/live_ech.cljk crypto.cloudflare.com corrupt   # must reject
 ```
 
 Both verified the server's `CertificateVerify` signature over the section 4.4.3
@@ -408,7 +408,7 @@ codec underneath them is byte arithmetic, which is exactly where the two
 runtimes differ.
 
 ```sh
-nbb --classpath "$(clojure -A:cljs -Spath)" scripts/verify-cljs.cljk
+kbb --backend sci --classpath "$(kbb -A:cljs -Spath)" scripts/verify-cljs.cljk
 ```
 
 **922 assertions there; 1,472 for the whole suite on the JVM.** The runner
@@ -419,8 +419,8 @@ otherwise report success.
 ## Test
 
 ```sh
-clojure -M:test                   # plain clojure.test
-clojure -M:report                 # the same tests, with counts
+kbb -M:test                   # plain clojure.test
+kbb -M:report                 # the same tests, with counts
 ```
 
 Last run:

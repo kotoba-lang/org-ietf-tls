@@ -1,7 +1,7 @@
 ;; A live handshake against kotobase.net:443 over the public internet.
 ;;
-;;   clojure -M scripts/live_kotobase.cljk [path]
-;;   clojure -M scripts/live_kotobase.cljk /llms.txt wrong-pin
+;;   kbb -M scripts/live_kotobase.cljk [path]
+;;   kbb -M scripts/live_kotobase.cljk /llms.txt wrong-pin
 ;;
 ;; The peer is authenticated by SPKI pin. The pin below is the one
 ;; `kotoba-lang/aiueos` already uses for this host; it is a public key digest,

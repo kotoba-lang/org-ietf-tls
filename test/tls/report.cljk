@@ -1,7 +1,7 @@
 (ns tls.report
   "A test entry point that prints what it measured and refuses a silent pass.
 
-  Run with `clojure -M:test -m tls.report`.
+  Run with `kbb -M:test -m tls.report`.
 
   Root ADR-2608136000: a check that could not run must never return the value
   of a check that ran and found nothing wrong. The default `clojure.test`
