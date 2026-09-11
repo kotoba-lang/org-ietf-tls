@@ -29,7 +29,7 @@
   (let [f (io/file (str fixture-dir n))]
     (when-not (.exists f)
       (throw (ex-info (str "fixture missing: " f
-                           " — `clojure -M:test` must run from the repository root")
+                           " — `kbb -M:test` must run from the repository root")
                       {:fixture n})))
     f))
 
