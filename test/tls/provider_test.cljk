@@ -17,7 +17,7 @@
   truncated `vectors.edn` therefore turns the suite red rather than quietly
   reducing it to nothing."
   (:require [kotoba.test :refer [deftest testing is use-fixtures]]
-            [clojure.edn :as edn]
+            [kotoba.lang.edn :as edn]
             [clojure.java.io :as io]
             [kotoba.lang.text :as str]
             [tls.provider :as p]
