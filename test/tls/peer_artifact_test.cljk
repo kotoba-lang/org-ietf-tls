@@ -22,7 +22,7 @@
 
 (ns tls.peer-artifact-test
   (:require [kotoba.lang.edn :as edn]
-            [clojure.java.io :as io]
+            [kotoba.io :as io]
             [clojure.java.shell :as shell]
             [kotoba.lang.text :as str]
             [kotoba.test :refer [deftest is testing]]
@@ -44,7 +44,7 @@
     {:kotoba (let [bin (str amu-root "/bin/kotoba")]
                (when (runs? bin "--help") bin))
      :nbb (when (runs? "nbb" "--version") "nbb")
-     :runtime (.exists (io/file amu-root "runtime/browser-host.mjs"))}))
+     :runtime (io/exists? (io/file amu-root "runtime/browser-host.mjs"))}))
 
 (def ^:private probe
   (delay
@@ -120,6 +120,6 @@
                       "--jvm-free" "--target" "aarch64-macos" "--output" out)]
       (is (zero? (:exit r))
           (str "the native backend refused this guest: " (str/trim (str (:out r) (:err r)))))
-      (is (.exists (io/file out)) "and produced no code image"))
+      (is (io/exists? (io/file out)) "and produced no code image"))
     (is false (str "native gate could not run: no kotoba CLI at " amu-root))))
 
