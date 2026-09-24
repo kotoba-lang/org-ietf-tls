@@ -16,7 +16,7 @@
   number of vectors executed does not equal the number registered. A missing or
   truncated `vectors.edn` therefore turns the suite red rather than quietly
   reducing it to nothing."
-  (:require [kotoba.test :refer [deftest testing is use-fixtures]]
+  (:require [kotoba.bytes :as kbytes] [kotoba.test :refer [deftest testing is use-fixtures]]
             [kotoba.lang.edn :as edn]
             [clojure.java.io :as io]
             [kotoba.lang.text :as str]
@@ -40,7 +40,7 @@
 (defn- bytes->hex [b]
   (apply str (map #(format "%02x" (bit-and % 0xff)) b)))
 
-(defn- utf8 ^bytes [s] (.getBytes ^String s "UTF-8"))
+(defn- utf8 ^bytes [s] (kbytes/utf8-bytes ^String s))
 
 (defn- flip-byte
   "A copy of `b` with one bit of byte `i` inverted."
