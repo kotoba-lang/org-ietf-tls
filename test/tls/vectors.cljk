@@ -10,7 +10,7 @@
   than by name alone matters -- `PRK` appears seventeen times, and a lookup
   that returned the first match would silently compare the wrong derivation
   and pass."
-  (:require [kotoba.lang.text] [clojure.edn :as edn]
+  (:require [kotoba.lang.text] [kotoba.lang.edn :as edn]
             [clojure.java.io :as io]))
 
 (def fixture
