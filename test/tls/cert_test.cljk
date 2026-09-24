@@ -15,7 +15,7 @@
             [asn1.oid :as oid]
             [clojure.java.io :as io]
             [kotoba.lang.text :as str]
-            [clojure.test :refer [deftest is testing use-fixtures]]
+            [kotoba.test :refer [deftest is testing use-fixtures]]
             [tls.cert :as cert]
             [tls.provider :as tls-provider]
             [tls.provider.jvm :as jvm]

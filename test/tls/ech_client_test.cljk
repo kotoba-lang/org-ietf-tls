@@ -12,7 +12,7 @@
   reconstructs to exactly the inner hello the client composed.** That is the
   server's whole job in §5.1, run against the client's real output rather than
   against a hand-built fixture."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [tls.client :as client]
             [tls.codec :as c]
             [tls.ech :as ech]

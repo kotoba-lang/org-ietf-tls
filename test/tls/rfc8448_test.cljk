@@ -9,7 +9,7 @@
   The suite counts what it ran and refuses to report success on zero -- see
   `tls.suite-report`. A vector that could not be exercised is printed as
   SKIPPED with the reason, never quietly omitted."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [kotoba.test :refer [deftest testing is]]
             [tls.codec :as c]
             [tls.extension :as ext]
             [tls.handshake :as hs]
