@@ -17,7 +17,7 @@
      abort, and each is asserted by its own reason. These matter more than
      they look: three of them exist to stop a small ClientHelloOuter
      decompressing into a huge ClientHelloInner (§10.12.4)."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [tls.codec :as c]
             [tls.ech :as ech]
             [tls.ech-configs :as live]

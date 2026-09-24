@@ -7,7 +7,7 @@
 ;;
 ;;   kbb --backend sci --classpath "$(kbb -A:cljs -Spath)" scripts/verify-cljs.cljk
 (ns verify-cljs
-  (:require [clojure.test :as t]
+  (:require [kotoba.test :as t]
             [tls.ech-test]))
 
 (defmethod t/report [:cljs.test/default :end-run-tests] [m]

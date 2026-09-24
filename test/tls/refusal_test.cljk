@@ -10,7 +10,7 @@
 
   Each test also names what it broke, so that `the break and the report agree`
   is checkable by a reader rather than assumed."
-  (:require [kotoba.lang.text] [clojure.test :refer [deftest testing is]]
+  (:require [kotoba.lang.text] [kotoba.test :refer [deftest testing is]]
             [tls.cert :as cert]
             [tls.client :as client]
             [tls.codec :as c]

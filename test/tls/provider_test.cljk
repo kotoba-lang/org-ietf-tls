@@ -16,7 +16,7 @@
   number of vectors executed does not equal the number registered. A missing or
   truncated `vectors.edn` therefore turns the suite red rather than quietly
   reducing it to nothing."
-  (:require [clojure.test :refer [deftest testing is use-fixtures]]
+  (:require [kotoba.test :refer [deftest testing is use-fixtures]]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [kotoba.lang.text :as str]

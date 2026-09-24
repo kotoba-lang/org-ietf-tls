@@ -28,7 +28,7 @@
 (ns tls.peer-kotoba-test
   (:require [asn1.core :as asn1]
             [clojure.java.io :as io]
-            [clojure.test :refer [deftest is testing]]
+            [kotoba.test :refer [deftest is testing]]
             [kotoba.compiler.core :as compiler]
             [kotoba.kir :as ir]
             [tls.cert :as cert]

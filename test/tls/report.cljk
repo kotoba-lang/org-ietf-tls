@@ -16,7 +16,7 @@
   The exit code for `could not answer` is deliberately not 1: a suite that
   could not run its vectors has not found a bug, and reporting one is its own
   kind of lie."
-  (:require [clojure.test :as t]
+  (:require [kotoba.test :as t]
             [tls.vectors :as v]))
 
 (def ^:private namespaces
