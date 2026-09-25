@@ -17,7 +17,7 @@
      abort, and each is asserted by its own reason. These matter more than
      they look: three of them exist to stop a small ClientHelloOuter
      decompressing into a huge ClientHelloInner (§10.12.4)."
-  (:require [kotoba.test :refer [deftest is testing]]
+  (:require [kotoba.bytes :as kbytes] [kotoba.test :refer [deftest is testing]]
             [tls.codec :as c]
             [tls.ech :as ech]
             [tls.ech-configs :as live]
@@ -39,7 +39,7 @@
    :hmac (fn [_ k m] (vec (sha2/hmac-sha256 (vec k) (vec m))))})
 
 (defn- b64->bytes [s]
-  #?(:clj (mapv #(bit-and (int %) 0xff) (.decode (java.util.Base64/getDecoder) ^String s))
+  #?(:clj (mapv #(bit-and (int %) 0xff) (kbytes/base64-decode-bytes ^String s))
      :cljs (let [b (js/Buffer.from s "base64")] (mapv #(bit-and % 0xff) (array-seq b)))))
 
 (defn- ascii-of [bs] (apply str (map char bs)))

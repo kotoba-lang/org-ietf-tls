@@ -11,7 +11,7 @@
   that returned the first match would silently compare the wrong derivation
   and pass."
   (:require [kotoba.lang.text] [kotoba.lang.edn :as edn]
-            [clojure.java.io :as io]))
+            [kotoba.io :as io]))
 
 (def fixture
   (delay (edn/read-string (slurp (io/resource "rfc8448_section3.edn")))))

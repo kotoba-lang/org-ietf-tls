@@ -13,7 +13,7 @@
   encoder agrees with itself."
   (:require [asn1.core :as asn1]
             [asn1.oid :as oid]
-            [clojure.java.io :as io]
+            [kotoba.io :as io]
             [kotoba.lang.text :as str]
             [kotoba.test :refer [deftest is testing use-fixtures]]
             [tls.cert :as cert]
@@ -27,7 +27,7 @@
 
 (defn- fixture-file [n]
   (let [f (io/file (str fixture-dir n))]
-    (when-not (.exists f)
+    (when-not (io/exists? f)
       (throw (ex-info (str "fixture missing: " f
                            " — `kbb -M:test` must run from the repository root")
                       {:fixture n})))
