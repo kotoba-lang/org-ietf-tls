@@ -18,7 +18,7 @@
   reducing it to nothing."
   (:require [kotoba.bytes :as kbytes] [kotoba.test :refer [deftest testing is use-fixtures]]
             [kotoba.lang.edn :as edn]
-            [clojure.java.io :as io]
+            [kotoba.io :as io]
             [kotoba.lang.text :as str]
             [tls.provider :as p]
             [tls.provider.jvm :as jvm])
