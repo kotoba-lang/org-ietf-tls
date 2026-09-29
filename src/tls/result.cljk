@@ -2,7 +2,7 @@
   "Every fallible operation in this library returns a value, never throws.
 
   `[:ok v]` / `[:error e]`, which is the portable spelling of Kotoba's
-  `[:result T E]` (root CLAUDE.md: errors are returned as values, and that is a
+  `[:result T E]` (root AGENTS.md: errors are returned as values, and that is a
   permanent constraint rather than a backend gap). A TLS implementation is the
   worst possible place for an exception to carry a partial result out of a
   verifier: the whole point of an AEAD open is that on failure there is no

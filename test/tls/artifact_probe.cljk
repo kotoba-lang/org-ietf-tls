@@ -7,7 +7,7 @@
 ;; interpreter.
 ;;
 ;; nbb rather than a `.mjs`: this workspace does not add raw JavaScript
-;; harnesses (CLAUDE.md, runtime priority).
+;; harnesses (AGENTS.md, runtime priority).
 ;;
 ;; Fuel is spent over the life of an INSTANCE, not per call, so every call
 ;; gets a fresh one -- the same thing amu's own `runtime/dom-driver.mjs`
